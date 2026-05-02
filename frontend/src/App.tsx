@@ -12,8 +12,9 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen flex items-center justify-center font-sans">
-      <p className="text-lg">Backend: {status}</p>
+    <div className="min-h-screen flex flex-col items-center justify-center gap-3">
+      <p className="text-lg text-text-primary">Backend: {status}</p>
+      <span className="inline-block h-3 w-3 rounded-full bg-primary" aria-hidden />
     </div>
   );
 }
