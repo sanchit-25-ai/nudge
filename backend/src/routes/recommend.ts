@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import type { ZodIssue } from "zod";
-import type { Dish, RecommendError, RecommendResponse } from "@shared/types";
+import type { RecommendError, RecommendResponse } from "@shared/types";
 import { RecommendRequestSchema } from "../schema";
+import { AnthropicWrapperError, runRecommend } from "../anthropic";
 
 // Zod's default messages for these codes embed the user-supplied received
 // value (e.g. "...received 'foo'"). Spec requires path + message only — no
@@ -19,89 +20,7 @@ function sanitiseIssueMessage(issue: ZodIssue): string {
 
 export const recommendRouter = Router();
 
-// Realistic Mumbai 5-dish fixture. DELETE this block in Item 05 when the
-// real Anthropic + MCP call replaces the stub. Image URLs use Unsplash CDN
-// with `?w=600&q=80` so the dev card render in Item 10 isn't fed multi-MB
-// originals.
-const FIXTURE_DISHES: Dish[] = [
-  {
-    id: "fx-1",
-    name: "Chicken Biryani",
-    restaurant: {
-      name: "Behrouz Biryani",
-      rating: 4.4,
-      etaMinutes: 32,
-      swiggyUrl: "https://www.swiggy.com/restaurants/behrouz-biryani-mumbai",
-    },
-    imageUrl:
-      "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=600&q=80",
-    priceInr: 280,
-    cuisineTags: ["Biryani", "Mughlai"],
-    healthNudge: false,
-  },
-  {
-    id: "fx-2",
-    name: "Butter Chicken",
-    restaurant: {
-      name: "Punjabi By Nature",
-      rating: 4.3,
-      etaMinutes: 38,
-      swiggyUrl: "https://www.swiggy.com/restaurants/punjabi-by-nature-mumbai",
-    },
-    imageUrl:
-      "https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?w=600&q=80",
-    priceInr: 320,
-    cuisineTags: ["North Indian", "Punjabi"],
-    healthNudge: true,
-  },
-  {
-    id: "fx-3",
-    name: "Hakka Noodles",
-    restaurant: {
-      name: "Mainland China",
-      rating: 4.2,
-      etaMinutes: 29,
-      swiggyUrl: "https://www.swiggy.com/restaurants/mainland-china-mumbai",
-    },
-    imageUrl:
-      "https://images.unsplash.com/photo-1612929633738-8fe44f7ec841?w=600&q=80",
-    priceInr: 240,
-    cuisineTags: ["Chinese", "Indo-Chinese"],
-    healthNudge: false,
-  },
-  {
-    id: "fx-4",
-    name: "Margherita Pizza",
-    restaurant: {
-      name: "Pizza Express",
-      rating: 4.1,
-      etaMinutes: 27,
-      swiggyUrl: "https://www.swiggy.com/restaurants/pizza-express-mumbai",
-    },
-    imageUrl:
-      "https://images.unsplash.com/photo-1604068549290-dea0e4a305ca?w=600&q=80",
-    priceInr: 299,
-    cuisineTags: ["Italian", "Pizza"],
-    healthNudge: false,
-  },
-  {
-    id: "fx-5",
-    name: "Masala Dosa",
-    restaurant: {
-      name: "Sagar Ratna",
-      rating: 4.5,
-      etaMinutes: 24,
-      swiggyUrl: "https://www.swiggy.com/restaurants/sagar-ratna-mumbai",
-    },
-    imageUrl:
-      "https://images.unsplash.com/photo-1668236543090-82eba5ee5976?w=600&q=80",
-    priceInr: 180,
-    cuisineTags: ["South Indian"],
-    healthNudge: false,
-  },
-];
-
-recommendRouter.post("/recommend", (req, res) => {
+recommendRouter.post("/recommend", async (req, res) => {
   const requestId = randomUUID();
   res.locals.requestId = requestId;
 
@@ -123,6 +42,30 @@ recommendRouter.post("/recommend", (req, res) => {
     return;
   }
 
-  const body: RecommendResponse = { requestId, dishes: FIXTURE_DISHES };
-  res.status(200).json(body);
+  try {
+    const dishes = await runRecommend(result.data, requestId);
+    const body: RecommendResponse = { requestId, dishes };
+    res.status(200).json(body);
+  } catch (err) {
+    if (err instanceof AnthropicWrapperError) {
+      const status = err.code === "internal_error" ? 500 : 502;
+      const body: RecommendError = {
+        error: {
+          code: err.code,
+          message: err.message,
+          requestId,
+        },
+      };
+      res.status(status).json(body);
+      return;
+    }
+    const body: RecommendError = {
+      error: {
+        code: "internal_error",
+        message: "Unexpected error",
+        requestId,
+      },
+    };
+    res.status(500).json(body);
+  }
 });

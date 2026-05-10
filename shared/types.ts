@@ -105,8 +105,12 @@ export type RecommendResponse = {
   dishes: Dish[]; // length === 5 (validated by RecommendResponseSchema)
 };
 
-// Item 05 will extend this union with model_error / mcp_error / parse_error.
-export type RecommendErrorCode = "validation_error" | "internal_error";
+export type RecommendErrorCode =
+  | "validation_error"
+  | "internal_error"
+  | "model_error"
+  | "mcp_error"
+  | "parse_error";
 
 export type RecommendError = {
   error: {
