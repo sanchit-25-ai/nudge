@@ -50,7 +50,7 @@ If Sanchit appears to skip a step in the default flow — e.g. implementing with
 
 ## Anthropic + Swiggy MCP (locked decisions)
 
-- **Model**: `claude-opus-4-7`
+- **Model**: `claude-sonnet-4-6` (revisited in Item 05 — Sonnet handles ranking + MCP tool-use well; materially lower cost and latency than Opus 4.7 with no quality loss for this task)
 - **MCP server**: `https://mcp.swiggy.com/food`
 - **Beta header**: `mcp-client-2025-04-04`
 - **Prompt caching is mandatory** — the static system-prompt prefix (role + ranking algorithm + diversity rules + output schema) carries `cache_control: { type: 'ephemeral' }`. Only the per-request user-context block stays uncached.

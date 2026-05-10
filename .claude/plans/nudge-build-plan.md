@@ -12,7 +12,7 @@ The plan is intentionally a **roadmap of items**, not an implementation. Each nu
 
 ## Decisions locked in
 
-- **Model**: `claude-opus-4-7` — best available reasoning + tool-use for the recommend endpoint. Prompt caching is non-optional given Opus pricing — the static system prompt prefix (role + ranking algorithm + diversity rules + output schema) gets cached; only the per-request user-context block stays uncached.
+- **Model**: `claude-sonnet-4-6` — strong tool-use and JSON adherence for the recommend endpoint at materially lower cost/latency than Opus 4.7 (revisited in Item 05; quality is more than sufficient for this prototype). Prompt caching is still mandatory — the static system prompt prefix (role + ranking algorithm + diversity rules + output schema) gets cached; only the per-request user-context block stays uncached.
 - **Swiggy MCP**: real MCP from day one (`https://mcp.swiggy.com/food`), personal-use only. No public deployment until Builders Club access is approved.
 - **Cadence**: vertical-slice first — get one end-to-end flow working before fanning out to the full feature set. De-risks the Anthropic + MCP + structured-output integration earliest.
 
@@ -43,7 +43,7 @@ nudge/
 2. **Minimal design tokens** — primary `#FC8019`, surfaces, text, font stack as Tailwind theme. Full §6.2 token set lands here so we don't revisit later.
 3. **Seed user profile** — `localStorage` schema from spec §7.4. One seeded demo persona (Mumbai non-veg) + a "reset profile" dev affordance.
 4. **`/api/recommend` skeleton** — Express endpoint, Zod request validation, structured logger, CORS for local FE, typed error envelope.
-5. **Anthropic Opus + Swiggy MCP wiring** — single SDK call with `model: "claude-opus-4-7"`, `mcp_servers: [{ url: "https://mcp.swiggy.com/food", ... }]`, `betas: ["mcp-client-2025-04-04"]`, **prompt caching on the static system-prompt prefix**. Tool-use loop until model returns final JSON.
+5. **Anthropic Sonnet + Swiggy MCP wiring** — single SDK call with `model: "claude-sonnet-4-6"`, `mcp_servers: [{ url: "https://mcp.swiggy.com/food", ... }]`, `betas: ["mcp-client-2025-04-04"]`, **prompt caching on the static system-prompt prefix**. Tool-use loop until model returns final JSON.
 6. **System-prompt builder** — assembles role + cached static block (ranking algorithm §5, diversity rules, JSON output schema) + dynamic user-context block (time, location, history summary, Q answers).
 7. **Response parser + validator** — Zod schema for the 5-card array (spec §7.3 output format), retry-once on malformed JSON, surface typed error to FE on second failure.
 8. **Single-question screen** — Q1 (hunger level) only. Pill buttons, 44px tap, "Find my meal" CTA. Submit hits `/api/recommend` with passive context.
