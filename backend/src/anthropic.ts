@@ -1,33 +1,27 @@
 import Anthropic, { APIError } from "@anthropic-ai/sdk";
 import type {
   BetaContentBlock,
+  BetaContentBlockParam,
   BetaMessageParam,
   BetaUsage,
   MessageCreateParamsNonStreaming,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import type { Dish, RecommendErrorCode, RecommendRequest } from "@shared/types";
-import { RecommendResponseSchema } from "./schema";
+import type { Dish, RecommendRequest } from "@shared/types";
 import { STATIC_PROMPT, buildDynamicContext } from "./prompt";
+import { CORRECTION_MESSAGE, parseDishes } from "./parser";
+import { AnthropicWrapperError, type AnthropicErrorCode } from "./errors";
+
+// Re-export so existing callers (routes/recommend.ts, anthropic.test.ts) can
+// continue importing the error class from the SDK facade module. The canonical
+// home is ./errors — parser.ts depends on it directly to avoid the cycle.
+export { AnthropicWrapperError, type AnthropicErrorCode } from "./errors";
 
 const MODEL = "claude-sonnet-4-6";
 const MCP_SERVER_URL = "https://mcp.swiggy.com/food";
 const MCP_BETA = "mcp-client-2025-04-04";
 const MAX_TOOL_ITERATIONS = 5;
+const MAX_PARSE_ATTEMPTS = 2;
 const MAX_TOKENS = 4096;
-
-// Derived from the shared envelope union so adding a new code in a future
-// item (e.g. Item 07's parse-retry codes) is a single edit in shared/types.ts.
-// validation_error is the route's responsibility, not the wrapper's.
-export type AnthropicErrorCode = Exclude<RecommendErrorCode, "validation_error">;
-
-export class AnthropicWrapperError extends Error {
-  readonly code: AnthropicErrorCode;
-  constructor(code: AnthropicErrorCode, message: string) {
-    super(message);
-    this.name = "AnthropicWrapperError";
-    this.code = code;
-  }
-}
 
 // SDK 0.30.x doesn't yet type the `mcp_servers` request parameter for the
 // MCP connector beta. Verified against versions through 0.95.x; bumping
@@ -80,54 +74,25 @@ function buildParams(
   };
 }
 
-function findFinalText(content: BetaContentBlock[]): string | null {
-  for (let i = content.length - 1; i >= 0; i--) {
-    const block = content[i];
-    if (block.type === "text") return block.text;
-  }
-  return null;
+// resp.content is BetaContentBlock[] (output union); BetaMessageParam.content
+// wants BetaContentBlockParam[] (input union). Text blocks are shape-compatible
+// but the types are nominally distinct, so we narrow and rebuild. tool_use
+// blocks on this path are unreachable — the wrapper rejects stop_reason
+// "tool_use" before this helper runs.
+function assistantContentForRetry(
+  content: BetaContentBlock[],
+): BetaContentBlockParam[] {
+  const blocks: BetaContentBlockParam[] = content
+    .filter((b): b is Extract<BetaContentBlock, { type: "text" }> =>
+      b.type === "text",
+    )
+    .map((b) => ({ type: "text", text: b.text }));
+  return blocks.length > 0
+    ? blocks
+    : [{ type: "text", text: "(empty response)" }];
 }
 
-function parseDishes(content: BetaContentBlock[]): Dish[] {
-  const text = findFinalText(content);
-  if (!text) {
-    throw new AnthropicWrapperError(
-      "parse_error",
-      "Model response contained no text block",
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new AnthropicWrapperError(
-      "parse_error",
-      "Model response was not valid JSON",
-    );
-  }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    !("dishes" in parsed)
-  ) {
-    throw new AnthropicWrapperError(
-      "parse_error",
-      "Model response missing `dishes` field",
-    );
-  }
-  const result = RecommendResponseSchema.shape.dishes.safeParse(
-    (parsed as { dishes: unknown }).dishes,
-  );
-  if (!result.success) {
-    throw new AnthropicWrapperError(
-      "parse_error",
-      "Model response failed schema validation",
-    );
-  }
-  return result.data;
-}
-
-// TODO(Item 07): Refine once real MCP error messages are observed in
+// TODO: Refine once real MCP error messages are observed in
 // production — substring matching on err.message is brittle. If a debug
 // log path is added inside this function, log err.status / err.name only,
 // never err.message (the SDK message can carry request IDs / partial URLs).
@@ -153,6 +118,7 @@ export async function runRecommend(
 ): Promise<Dish[]> {
   const startedAt = Date.now();
   let toolIterations = 0;
+  let parseAttempts = 0;
   let lastUsage: BetaUsage | null = null;
   let status: AnthropicErrorCode | "ok" = "ok";
 
@@ -178,7 +144,16 @@ export async function runRecommend(
       lastUsage = resp.usage;
 
       if (resp.stop_reason === "end_turn") {
-        return parseDishes(resp.content);
+        parseAttempts++;
+        const result = parseDishes(resp.content);
+        if (result.ok) return result.dishes;
+        if (parseAttempts >= MAX_PARSE_ATTEMPTS) throw result.error;
+        messages.push({
+          role: "assistant",
+          content: assistantContentForRetry(resp.content),
+        });
+        messages.push({ role: "user", content: CORRECTION_MESSAGE });
+        continue;
       }
 
       if (resp.stop_reason === "tool_use") {
@@ -223,6 +198,7 @@ export async function runRecommend(
       event: "recommend_call",
       durationMs: Date.now() - startedAt,
       toolIterations,
+      parseAttempts,
       status,
       cacheReadTokens: lastUsage?.cache_read_input_tokens ?? null,
       cacheCreationTokens: lastUsage?.cache_creation_input_tokens ?? null,

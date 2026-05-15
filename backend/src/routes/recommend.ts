@@ -4,6 +4,7 @@ import type { ZodIssue } from "zod";
 import type { RecommendError, RecommendResponse } from "@shared/types";
 import { RecommendRequestSchema } from "../schema";
 import { AnthropicWrapperError, runRecommend } from "../anthropic";
+import type { AnthropicErrorCode } from "../errors";
 
 // Zod's default messages for these codes embed the user-supplied received
 // value (e.g. "...received 'foo'"). Spec requires path + message only — no
@@ -12,6 +13,17 @@ const ISSUE_CODE_MESSAGES: Partial<Record<ZodIssue["code"], string>> = {
   invalid_enum_value: "Invalid value for enum field",
   invalid_literal: "Invalid literal value",
   unrecognized_keys: "Unrecognized key(s) in object",
+};
+
+// Outward-facing messages keyed by error code. The wrapper's err.message is
+// kept for server-side logs only — never forwarded into the HTTP body — so
+// any future interpolated content (model output, SDK strings, Zod paths)
+// cannot leak through the response.
+const CODE_MESSAGES: Record<AnthropicErrorCode, string> = {
+  parse_error: "The model returned a response that could not be processed.",
+  model_error: "The model returned an unexpected response.",
+  mcp_error: "The upstream data source is unavailable.",
+  internal_error: "An internal error occurred.",
 };
 
 function sanitiseIssueMessage(issue: ZodIssue): string {
@@ -49,10 +61,21 @@ recommendRouter.post("/recommend", async (req, res) => {
   } catch (err) {
     if (err instanceof AnthropicWrapperError) {
       const status = err.code === "internal_error" ? 500 : 502;
+      if (process.env.NODE_ENV !== "test") {
+        console.log(
+          JSON.stringify({
+            t: new Date().toISOString(),
+            requestId,
+            event: "recommend_error",
+            code: err.code,
+            message: err.message,
+          }),
+        );
+      }
       const body: RecommendError = {
         error: {
           code: err.code,
-          message: err.message,
+          message: CODE_MESSAGES[err.code],
           requestId,
         },
       };
@@ -62,7 +85,7 @@ recommendRouter.post("/recommend", async (req, res) => {
     const body: RecommendError = {
       error: {
         code: "internal_error",
-        message: "Unexpected error",
+        message: CODE_MESSAGES.internal_error,
         requestId,
       },
     };

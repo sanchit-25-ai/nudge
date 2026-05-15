@@ -18,6 +18,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Dish, RecommendRequest } from "@shared/types";
+import { CORRECTION_MESSAGE } from "./parser";
 
 // ---------------------------------------------------------------------------
 // Mock @anthropic-ai/sdk BEFORE importing the module under test.
@@ -30,23 +31,27 @@ import type { Dish, RecommendRequest } from "@shared/types";
 //     its return value.
 // ---------------------------------------------------------------------------
 
-// We capture the mock function reference here so tests can configure it.
-const mockCreate = vi.fn();
-
-// APIError must be a real class for instanceof checks inside anthropic.ts.
-class MockAPIError extends Error {
-  status: number;
-  constructor(
-    message: string,
-    status = 500,
-    _error?: unknown,
-    _headers?: unknown,
-  ) {
-    super(message);
-    this.name = "APIError";
-    this.status = status;
+// Vitest hoists vi.mock(...) above all module-scope declarations, so anything
+// the factory references must be created inside vi.hoisted(...) — otherwise the
+// factory runs while `mockCreate` / `MockAPIError` are still in the temporal
+// dead zone and throws ReferenceError at collection time.
+const { mockCreate, MockAPIError } = vi.hoisted(() => {
+  // APIError must be a real class for instanceof checks inside anthropic.ts.
+  class MockAPIError extends Error {
+    status: number;
+    constructor(
+      message: string,
+      status = 500,
+      _error?: unknown,
+      _headers?: unknown,
+    ) {
+      super(message);
+      this.name = "APIError";
+      this.status = status;
+    }
   }
-}
+  return { mockCreate: vi.fn(), MockAPIError };
+});
 
 vi.mock("@anthropic-ai/sdk", () => {
   // The module under test uses: `import Anthropic, { APIError } from "@anthropic-ai/sdk"`
@@ -463,9 +468,12 @@ describe("runRecommend — tool_use stop_reason (bounded loop)", () => {
 // ===========================================================================
 // 4. Parse errors — malformed or schema-invalid model output
 // ===========================================================================
-describe("runRecommend — parse errors (no retry in Item 05)", () => {
+describe("runRecommend — parse-failure shapes (parse_error after retry exhausted)", () => {
   it("throws AnthropicWrapperError with code 'parse_error' when response text is not valid JSON", async () => {
-    mockCreate.mockResolvedValueOnce({
+    // mockResolvedValue (not Once) so both the original and the retry call see
+    // the same malformed payload — MAX_PARSE_ATTEMPTS=2 exhausts and the
+    // wrapper surfaces parse_error. Same pattern for every test in this block.
+    mockCreate.mockResolvedValue({
       stop_reason: "end_turn",
       content: [{ type: "text", text: "this is not json at all" }],
       usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
@@ -482,7 +490,7 @@ describe("runRecommend — parse errors (no retry in Item 05)", () => {
   });
 
   it("throws parse_error when JSON is valid but missing the 'dishes' key", async () => {
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       stop_reason: "end_turn",
       content: [{ type: "text", text: JSON.stringify({ items: [] }) }],
       usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
@@ -500,7 +508,7 @@ describe("runRecommend — parse errors (no retry in Item 05)", () => {
 
   it("throws parse_error when dishes array has only 3 entries (schema requires exactly 5)", async () => {
     const threeDishes = Array.from({ length: 3 }, (_, i) => makeDish(i + 1));
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       stop_reason: "end_turn",
       content: [{ type: "text", text: JSON.stringify({ dishes: threeDishes }) }],
       usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
@@ -520,7 +528,7 @@ describe("runRecommend — parse errors (no retry in Item 05)", () => {
     const invalidDishes = makeFiveDishes().map((d, i) =>
       i === 0 ? { ...d, imageUrl: undefined } : d,
     );
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       stop_reason: "end_turn",
       content: [{ type: "text", text: JSON.stringify({ dishes: invalidDishes }) }],
       usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
@@ -542,7 +550,7 @@ describe("runRecommend — parse errors (no retry in Item 05)", () => {
         ? { ...d, restaurant: { ...d.restaurant, rating: 99 } }
         : d,
     );
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       stop_reason: "end_turn",
       content: [{ type: "text", text: JSON.stringify({ dishes: invalidDishes }) }],
       usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
@@ -559,7 +567,7 @@ describe("runRecommend — parse errors (no retry in Item 05)", () => {
   });
 
   it("throws parse_error when the response content array contains no text block", async () => {
-    mockCreate.mockResolvedValueOnce({
+    mockCreate.mockResolvedValue({
       stop_reason: "end_turn",
       content: [{ type: "tool_use", id: "tu_1", name: "search", input: {} }],
       usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
@@ -575,24 +583,10 @@ describe("runRecommend — parse errors (no retry in Item 05)", () => {
     expect((caught as any).code).toBe("parse_error");
   });
 
-  it("does NOT retry on parse failure (SDK called exactly once)", async () => {
-    mockCreate.mockResolvedValueOnce({
-      stop_reason: "end_turn",
-      content: [{ type: "text", text: "invalid json {{{" }],
-      usage: { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
-    });
-
-    const { runRecommend } = await import("./anthropic");
-
-    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID).catch(() => {
-      // Expected to throw; we only care about call count.
-    });
-
-    expect(
-      mockCreate,
-      "Item 05 must not retry on parse failure (retry is Item 07)",
-    ).toHaveBeenCalledOnce();
-  });
+  // The Item 05 "does NOT retry on parse failure" boundary marker was removed
+  // when Item 07 shipped retry-once. The retry-loop behaviour is covered by
+  // the `runRecommend — retry-on-malformed-JSON (Item 07)` describe block
+  // further down in this file.
 });
 
 // ===========================================================================
@@ -705,5 +699,278 @@ describe("AnthropicWrapperError — class properties", () => {
     const { AnthropicWrapperError } = await import("./anthropic");
     const err = new AnthropicWrapperError(code, "message");
     expect(err.code).toBe(code);
+  });
+});
+
+// ===========================================================================
+// 7. Retry-on-malformed-JSON — Item 07
+//
+// Spec: .claude/specs/07-response-parser.md §Implementation notes "Wrapper loop"
+//
+// After Item 07 ships, runRecommend retries ONCE on a parse failure when
+// stop_reason === "end_turn". MAX_PARSE_ATTEMPTS = 2 (original + one retry).
+// On the retry the wrapper appends:
+//   (a) the failed assistant turn's content blocks verbatim, and
+//   (b) a user turn whose content === CORRECTION_MESSAGE (from ./parser).
+// A second consecutive parse failure throws AnthropicWrapperError("parse_error").
+// ===========================================================================
+
+describe("runRecommend — retry-on-malformed-JSON (Item 07)", () => {
+  // -------------------------------------------------------------------------
+  // Helper: build a mock SDK response with end_turn and arbitrary content.
+  // -------------------------------------------------------------------------
+  function makeEndTurnWithContent(content: Array<{ type: string; text?: string; [k: string]: unknown }>) {
+    return {
+      stop_reason: "end_turn",
+      content,
+      usage: {
+        input_tokens: 200,
+        output_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 512,
+      },
+    };
+  }
+
+  function malformedEndTurn(text = "not valid json {{") {
+    return makeEndTurnWithContent([{ type: "text", text }]);
+  }
+
+  // -------------------------------------------------------------------------
+  // 7.1 First-attempt parse success → no retry, SDK called exactly once
+  // -------------------------------------------------------------------------
+  it("resolves with 5 dishes and calls SDK once when first parse succeeds", async () => {
+    mockCreate.mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    const result = await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    expect(result).toHaveLength(5);
+    expect(mockCreate, "No retry expected on first-attempt success").toHaveBeenCalledOnce();
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.2 First malformed → retry → valid → resolves; SDK called exactly twice
+  // -------------------------------------------------------------------------
+  it("resolves after one retry when first attempt is malformed JSON", async () => {
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn())
+      .mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    const result = await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    expect(result).toHaveLength(5);
+    expect(mockCreate, "SDK must be called exactly twice (original + 1 retry)").toHaveBeenCalledTimes(2);
+  });
+
+  it("second SDK call's messages array contains original user turn, assistant turn, and CORRECTION_MESSAGE user turn", async () => {
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn())
+      .mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    // The second SDK call is the retry call.
+    const retryCallArg = mockCreate.mock.calls[1][0] as Record<string, unknown>;
+    const messages = retryCallArg.messages as Array<{ role: string; content: unknown }>;
+
+    // messages[0]: original user "Recommend 5 dishes." request
+    expect(messages[0].role, "messages[0] must be user role").toBe("user");
+
+    // messages[1]: assistant turn carrying the bad content verbatim
+    expect(messages[1].role, "messages[1] must be assistant role").toBe("assistant");
+
+    // messages[2]: corrective user turn with CORRECTION_MESSAGE
+    expect(messages[2].role, "messages[2] must be user role").toBe("user");
+    expect(
+      messages[2].content,
+      "messages[2].content must equal CORRECTION_MESSAGE verbatim",
+    ).toBe(CORRECTION_MESSAGE);
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.3 Both attempts malformed → throws parse_error; SDK called exactly twice
+  // -------------------------------------------------------------------------
+  it("throws AnthropicWrapperError with code 'parse_error' when both attempts fail", async () => {
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn())
+      .mockResolvedValueOnce(malformedEndTurn());
+
+    const { runRecommend, AnthropicWrapperError } = await import("./anthropic");
+
+    const caught = await runRecommend(VALID_INPUT, FAKE_REQUEST_ID).catch(
+      (e: unknown) => e,
+    );
+
+    expect(caught).toBeInstanceOf(AnthropicWrapperError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((caught as any).code).toBe("parse_error");
+  });
+
+  it("SDK is called exactly twice when both parse attempts fail (MAX_PARSE_ATTEMPTS = 2)", async () => {
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn())
+      .mockResolvedValueOnce(malformedEndTurn());
+
+    const { runRecommend } = await import("./anthropic");
+    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID).catch(() => {});
+
+    expect(
+      mockCreate,
+      "Must stop retrying after MAX_PARSE_ATTEMPTS (2) — not three or more calls",
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.4 Assistant turn on retry preserves text content in order
+  // Spec §Implementation notes "Assistant-turn type-narrowing helper"
+  // -------------------------------------------------------------------------
+  it("appended assistant turn carries all original text blocks in order", async () => {
+    const firstContent = [
+      { type: "text", text: "Here:" },
+      { type: "text", text: "```json\n{\"foo\":1}\n```" },
+    ];
+    mockCreate
+      .mockResolvedValueOnce(makeEndTurnWithContent(firstContent))
+      .mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    const retryCallArg = mockCreate.mock.calls[1][0] as Record<string, unknown>;
+    const messages = retryCallArg.messages as Array<{ role: string; content: unknown }>;
+
+    // messages[1] is the appended assistant turn.
+    const assistantTurnContent = messages[1].content as Array<{ type: string; text?: string }>;
+    expect(assistantTurnContent).toHaveLength(2);
+    expect(assistantTurnContent[0].type).toBe("text");
+    expect(assistantTurnContent[0].text).toBe("Here:");
+    expect(assistantTurnContent[1].type).toBe("text");
+    expect(assistantTurnContent[1].text).toBe("```json\n{\"foo\":1}\n```");
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.5 Assistant turn fallback — empty content → "(empty response)" sentinel
+  // Spec §Implementation notes "locked fallback"
+  // -------------------------------------------------------------------------
+  it("appended assistant turn uses '(empty response)' sentinel when first response has empty content", async () => {
+    // First response has no content blocks at all.
+    const emptyContentResponse = {
+      stop_reason: "end_turn",
+      content: [],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    };
+    mockCreate
+      .mockResolvedValueOnce(emptyContentResponse)
+      .mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    const retryCallArg = mockCreate.mock.calls[1][0] as Record<string, unknown>;
+    const messages = retryCallArg.messages as Array<{ role: string; content: unknown }>;
+    const assistantTurnContent = messages[1].content as Array<{ type: string; text?: string }>;
+
+    expect(assistantTurnContent).toHaveLength(1);
+    expect(assistantTurnContent[0].type).toBe("text");
+    expect(assistantTurnContent[0].text).toBe("(empty response)");
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.6 Static system block identical across retry calls (cache hygiene)
+  // Spec §Determinism + §Rules for implementation "Prompt caching stays mandatory"
+  // -------------------------------------------------------------------------
+  it("both SDK calls carry identical system[0] with cache_control: {type:'ephemeral'}", async () => {
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn())
+      .mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    const firstCallArg = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+    const retryCallArg = mockCreate.mock.calls[1][0] as Record<string, unknown>;
+
+    const firstSystem = firstCallArg.system as Array<Record<string, unknown>>;
+    const retrySystem = retryCallArg.system as Array<Record<string, unknown>>;
+
+    // Static block (system[0]) must be identical across both calls.
+    expect(firstSystem[0].text).toBe(retrySystem[0].text);
+    expect(firstSystem[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(retrySystem[0].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("system[1] (dynamic block) has no cache_control on either call", async () => {
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn())
+      .mockResolvedValueOnce(makeEndTurnResponse(makeFiveDishes()));
+
+    const { runRecommend } = await import("./anthropic");
+    await runRecommend(VALID_INPUT, FAKE_REQUEST_ID);
+
+    const firstCallArg = mockCreate.mock.calls[0][0] as Record<string, unknown>;
+    const retryCallArg = mockCreate.mock.calls[1][0] as Record<string, unknown>;
+
+    const firstSystem = firstCallArg.system as Array<Record<string, unknown>>;
+    const retrySystem = retryCallArg.system as Array<Record<string, unknown>>;
+
+    expect(firstSystem[1].cache_control, "dynamic block must not be cached (first call)").toBeUndefined();
+    expect(retrySystem[1].cache_control, "dynamic block must not be cached (retry call)").toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.7 tool_use stop_reason still throws model_error (regression guard)
+  // Spec §Implementation notes: the `continue` on parse-retry must not fall
+  // through to the tool_use branch on a different iteration.
+  // -------------------------------------------------------------------------
+  it("throws model_error (not parse_error) when stop_reason is 'tool_use' after Item 07 changes", async () => {
+    mockCreate.mockResolvedValue(makeToolUseResponse());
+
+    const { runRecommend, AnthropicWrapperError } = await import("./anthropic");
+
+    const caught = await runRecommend(VALID_INPUT, FAKE_REQUEST_ID).catch(
+      (e: unknown) => e,
+    );
+
+    expect(caught).toBeInstanceOf(AnthropicWrapperError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((caught as any).code).toBe("model_error");
+  });
+
+  // -------------------------------------------------------------------------
+  // 7.8 MAX_PARSE_ATTEMPTS caps before MAX_TOOL_ITERATIONS
+  // Spec §Tech choices "Tool-loop budget composition"
+  // 5 consecutive malformed end_turn responses → rejects with parse_error;
+  // SDK called exactly 2 times (MAX_PARSE_ATTEMPTS), not 5 (MAX_TOOL_ITERATIONS).
+  // -------------------------------------------------------------------------
+  it("rejects with parse_error after exactly 2 SDK calls even when 5 malformed responses are staged", async () => {
+    // Stage 5 malformed responses. Only 2 should ever be consumed.
+    mockCreate
+      .mockResolvedValueOnce(malformedEndTurn("bad 1"))
+      .mockResolvedValueOnce(malformedEndTurn("bad 2"))
+      .mockResolvedValueOnce(malformedEndTurn("bad 3"))
+      .mockResolvedValueOnce(malformedEndTurn("bad 4"))
+      .mockResolvedValueOnce(malformedEndTurn("bad 5"));
+
+    const { runRecommend, AnthropicWrapperError } = await import("./anthropic");
+
+    const caught = await runRecommend(VALID_INPUT, FAKE_REQUEST_ID).catch(
+      (e: unknown) => e,
+    );
+
+    expect(caught).toBeInstanceOf(AnthropicWrapperError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((caught as any).code, "Must be parse_error not model_error").toBe("parse_error");
+    expect(
+      mockCreate,
+      "SDK must be called exactly 2 times (MAX_PARSE_ATTEMPTS), not up to MAX_TOOL_ITERATIONS (5)",
+    ).toHaveBeenCalledTimes(2);
   });
 });
