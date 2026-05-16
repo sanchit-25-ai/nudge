@@ -76,7 +76,7 @@ export default function Questions() {
     const profile = ensureProfile();
     const req: RecommendRequest = {
       answers: { q1: hunger },
-      passiveContext: buildPassiveContext(profile),
+      passiveContext: await buildPassiveContext(profile),
       profileSignal: buildProfileSignal(profile),
     };
     try {
