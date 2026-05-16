@@ -1,38 +1,24 @@
-import { useEffect, useState } from "react";
-import type { HealthResponse, UserProfile } from "@shared/types";
+import { useEffect } from "react";
 import { ensureProfile, resetAndReload } from "./lib/profile";
+import Questions from "./screens/Questions";
 
 export default function App() {
-  const [status, setStatus] = useState<string>("…");
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-
   useEffect(() => {
-    setProfile(ensureProfile());
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then((r) => r.json() as Promise<HealthResponse>)
-      .then((d) => setStatus(d.status))
-      .catch(() => setStatus("error"));
+    ensureProfile();
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center gap-3">
-      <p className="text-lg text-text-primary">Backend: {status}</p>
-      <span className="inline-block h-3 w-3 rounded-full bg-primary" aria-hidden />
-      {profile && (
-        <p className="text-sm text-text-secondary">
-          {profile.userId} · {profile.location.label} · {profile.dietaryPattern}
-        </p>
+    <>
+      <Questions />
+      {import.meta.env.DEV && (
+        <button
+          type="button"
+          onClick={resetAndReload}
+          className="fixed bottom-2 right-2 h-11 px-3 rounded-card border border-border bg-white text-2xs text-text-secondary"
+        >
+          Reset profile
+        </button>
       )}
-      <button
-        type="button"
-        onClick={resetAndReload}
-        className="h-11 min-w-11 px-4 rounded-card border border-border text-sm text-text-primary"
-      >
-        Reset profile
-      </button>
-    </div>
+    </>
   );
 }
