@@ -5,6 +5,7 @@ import type { RecommendError, RecommendResponse } from "@shared/types";
 import { RecommendRequestSchema } from "../schema";
 import { AnthropicWrapperError, runRecommend } from "../anthropic";
 import type { AnthropicErrorCode } from "../errors";
+import { STUB_DISHES } from "../stubDishes";
 
 // Zod's default messages for these codes embed the user-supplied received
 // value (e.g. "...received 'foo'"). Spec requires path + message only — no
@@ -51,6 +52,12 @@ recommendRouter.post("/recommend", async (req, res) => {
       },
     };
     res.status(400).json(body);
+    return;
+  }
+
+  if (process.env.USE_STUB_RECOMMEND === "true") {
+    const body: RecommendResponse = { requestId, dishes: STUB_DISHES };
+    res.status(200).json(body);
     return;
   }
 
