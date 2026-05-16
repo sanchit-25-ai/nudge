@@ -13,6 +13,7 @@ import { ensureProfile } from "../lib/profile";
 import { buildPassiveContext } from "../lib/passiveContext";
 import { buildProfileSignal } from "../lib/profileSignal";
 import { postRecommend, RecommendApiError } from "../lib/recommend";
+import DishCard from "../components/DishCard";
 
 type View =
   | { state: "idle" }
@@ -138,14 +139,12 @@ export default function Questions() {
         />
       )}
 
-      {view.state === "success" && (
+      {view.state === "success" && view.dishes[0] && (
         <div className="mt-8">
-          <p className="text-text-primary">
-            Received {view.dishes.length} dishes.
-          </p>
-          <pre className="mt-2 text-2xs text-text-secondary overflow-auto">
-            {JSON.stringify(view.dishes, null, 2)}
-          </pre>
+          <p className="text-text-primary">Here's what I'd order:</p>
+          <div className="mt-3">
+            <DishCard dish={view.dishes[0]} />
+          </div>
         </div>
       )}
 
