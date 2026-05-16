@@ -45,18 +45,37 @@ export const RecommendRequestSchema = z.object({
   profileSignal: ProfileSignalSchema,
 }) satisfies z.ZodType<RecommendRequest>;
 
+// z.string().url() accepts any scheme the WHATWG URL constructor recognises,
+// including javascript:, data:, and vbscript:. Both URL fields below land in
+// <a href> / <img src> on the FE, so reject anything other than https here.
+// The try/catch covers the case where upstream .url() fails and zod still
+// runs the refine — new URL(non-url) would otherwise throw uncaught.
+const HttpsUrl = z
+  .string()
+  .url()
+  .refine(
+    (u) => {
+      try {
+        return new URL(u).protocol === "https:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "URL must use HTTPS" },
+  );
+
 const RestaurantSchema = z.object({
   name: z.string().min(1),
   rating: z.number().min(0).max(5),
   etaMinutes: z.number().int().nonnegative(),
-  swiggyUrl: z.string().url(),
+  swiggyUrl: HttpsUrl,
 }) satisfies z.ZodType<Restaurant>;
 
 const DishSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   restaurant: RestaurantSchema,
-  imageUrl: z.string().url(),
+  imageUrl: HttpsUrl,
   priceInr: z.number().nonnegative(),
   cuisineTags: z.array(z.string().min(1)),
   healthNudge: z.boolean(),

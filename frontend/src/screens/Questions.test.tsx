@@ -7,6 +7,15 @@ import type { RecommendRequest, Dish, RecommendResponse } from "@shared/types";
 // Module mocks — must be hoisted before any import of the mocked modules.
 // ---------------------------------------------------------------------------
 
+// Mock DishCard to a sentinel test-double so Questions tests are decoupled from
+// DishCard's internal markup. The sentinel renders a data-testid and the dish id
+// so the screen test can assert on (a) presence and (b) which dish was passed.
+vi.mock("../components/DishCard", () => ({
+  default: ({ dish }: { dish: { id: string } }) => (
+    <div data-testid="dish-card" data-dish-id={dish.id} />
+  ),
+}));
+
 // Mock the recommend API client so no real fetch occurs in component tests.
 vi.mock("../lib/recommend", () => {
   const RecommendApiError = class extends Error {
@@ -494,10 +503,10 @@ describe("Questions — loading state", () => {
 });
 
 // ===========================================================================
-// 6. Success state
+// 6. Success state (Item 10: heading line + DishCard sentinel for dishes[0])
 // ===========================================================================
 describe("Questions — success state", () => {
-  it("renders 'Received 5 dishes.' after a successful response", async () => {
+  it("renders the success heading line after a successful response", async () => {
     const user = userEvent.setup();
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
@@ -505,10 +514,11 @@ describe("Questions — success state", () => {
     await user.click(screen.getByRole("radio", { name: /regular meal/i }));
     await user.click(getCta());
 
-    await screen.findByText(/received 5 dishes/i);
+    // The spec locks the heading copy as "Here's what I'd order:" (§Deliverables).
+    await screen.findByText(/here'?s what i'?d order/i);
   });
 
-  it("renders a <pre> element containing the serialised dishes JSON after success", async () => {
+  it("renders the DishCard sentinel after a successful response", async () => {
     const user = userEvent.setup();
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
@@ -516,14 +526,57 @@ describe("Questions — success state", () => {
     await user.click(screen.getByRole("radio", { name: /regular meal/i }));
     await user.click(getCta());
 
-    // First wait for the success heading so we know the view has transitioned.
-    await screen.findByText(/received 5 dishes/i);
+    const card = await screen.findByTestId("dish-card");
+    expect(card).toBeInTheDocument();
+  });
 
-    // <pre> has no implicit ARIA role — query by tag.
-    const preEl = document.querySelector("pre");
-    expect(preEl).not.toBeNull();
-    // The serialised JSON should include dish names from the response.
-    expect(preEl!.textContent).toContain("Dish 1");
+  it("passes dishes[0] (not dishes[1..4]) to DishCard", async () => {
+    const user = userEvent.setup();
+    const response = makeSuccessResponse();
+    mockPostRecommend.mockResolvedValue(response);
+    render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await user.click(getCta());
+
+    const card = await screen.findByTestId("dish-card");
+    expect(card).toHaveAttribute("data-dish-id", response.dishes[0].id);
+  });
+
+  it("renders exactly one DishCard sentinel (not all 5 dishes)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await user.click(getCta());
+
+    await screen.findByTestId("dish-card");
+    expect(screen.getAllByTestId("dish-card")).toHaveLength(1);
+  });
+
+  it("does not render the old 'Received N dishes.' placeholder text", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await user.click(getCta());
+
+    await screen.findByTestId("dish-card");
+    expect(screen.queryByText(/received \d+ dishes/i)).not.toBeInTheDocument();
+  });
+
+  it("does not render a <pre> JSON dump in the success state", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    const { container } = render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await user.click(getCta());
+
+    await screen.findByTestId("dish-card");
+    expect(container.querySelector("pre")).toBeNull();
   });
 
   it("hides the spinner after a successful response", async () => {
@@ -534,7 +587,7 @@ describe("Questions — success state", () => {
     await user.click(screen.getByRole("radio", { name: /regular meal/i }));
     await user.click(getCta());
 
-    await screen.findByText(/received 5 dishes/i);
+    await screen.findByTestId("dish-card");
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
@@ -699,7 +752,7 @@ describe("Questions — 'Try again' button behaviour", () => {
 
     await user.click(getCta());
 
-    await screen.findByText(/received 5 dishes/i);
+    await screen.findByTestId("dish-card");
     expect(mockPostRecommend).toHaveBeenCalledTimes(2);
   });
 });
