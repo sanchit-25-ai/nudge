@@ -1,15 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { RecommendRequest, Dish, RecommendResponse } from "@shared/types";
+import {
+  FREETEXT_MAX_CHARS,
+  type RecommendRequest,
+  type Dish,
+  type RecommendResponse,
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
-// Module mocks — must be hoisted before any import of the mocked modules.
+// Module mocks — hoisted before any import of the mocked modules.
 // ---------------------------------------------------------------------------
 
-// Mock DishCard to a sentinel test-double so Questions tests are decoupled from
-// DishCard's internal markup. The sentinel renders a data-testid and the dish id
-// so the screen test can assert on (a) presence and (b) which dish was passed.
+// Mock DishCard to a sentinel test-double — Questions tests are decoupled from
+// DishCard's internal markup. The sentinel renders a data-testid and the dish id.
 vi.mock("../components/DishCard", () => ({
   default: ({ dish }: { dish: { id: string } }) => (
     <div data-testid="dish-card" data-dish-id={dish.id} />
@@ -67,17 +71,16 @@ import { ensureProfile, saveProfile } from "../lib/profile";
 import type { UserProfile } from "@shared/types";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Typed mock handles
 // ---------------------------------------------------------------------------
 
-/** Cast the mocked postRecommend to a typed vi.Mock for cleaner assertions. */
 const mockPostRecommend = postRecommend as ReturnType<typeof vi.fn>;
-
-/** Cast the mocked ensureProfile for per-test persona overrides. */
 const mockEnsureProfile = ensureProfile as ReturnType<typeof vi.fn>;
-
-/** Cast the mocked saveProfile for skip-count assertions. */
 const mockSaveProfile = saveProfile as ReturnType<typeof vi.fn>;
+
+// ---------------------------------------------------------------------------
+// Persona fixtures
+// ---------------------------------------------------------------------------
 
 /** Non-veg seeded persona (default for most tests). */
 const NON_VEG_PROFILE: UserProfile = {
@@ -115,7 +118,10 @@ const SKIP_COLLAPSED_PROFILE: UserProfile = {
   q3SkipCount: 3,
 };
 
-/** Build a Dish that satisfies the backend's shape. */
+// ---------------------------------------------------------------------------
+// Response builders
+// ---------------------------------------------------------------------------
+
 function makeDish(overrides?: Partial<Dish>): Dish {
   return {
     id: "dish-001",
@@ -134,7 +140,6 @@ function makeDish(overrides?: Partial<Dish>): Dish {
   };
 }
 
-/** Build a valid 5-dish RecommendResponse. */
 function makeSuccessResponse(): RecommendResponse {
   return {
     requestId: "550e8400-e29b-41d4-a716-446655440000",
@@ -144,12 +149,58 @@ function makeSuccessResponse(): RecommendResponse {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Navigation helpers
+//
+// These helpers navigate through the step machine so individual tests don't
+// duplicate the walk-through boilerplate. Each returns the userEvent instance
+// so the caller can continue interacting.
+// ---------------------------------------------------------------------------
+
 /**
- * Convenience: find "Find my meal" button. Using getByRole ensures we're
- * asserting on the accessible element, not a class or data-attr.
+ * Advance from Q1 to Q2.
+ * Picks "Regular meal" hunger and clicks Next unless overridden.
  */
-function getCta(): HTMLElement {
-  return screen.getByRole("button", { name: /find my meal/i });
+async function advanceToQ2(
+  user: ReturnType<typeof userEvent.setup>,
+  hungerLabel = /regular meal/i,
+) {
+  await user.click(screen.getByRole("radio", { name: hungerLabel }));
+  await user.click(screen.getByRole("button", { name: /^next$/i }));
+}
+
+/** Advance from Q2 to Q3 (default profile, showQ3=true). */
+async function advanceToQ3(
+  user: ReturnType<typeof userEvent.setup>,
+  hungerLabel = /regular meal/i,
+) {
+  await advanceToQ2(user, hungerLabel);
+  await user.click(screen.getByRole("button", { name: /^next$/i }));
+}
+
+/**
+ * Advance from Q3 to freetext (default profile, showQ3=true).
+ * Returns without picking any Q3 chips unless the caller selects them before
+ * calling advanceToFreetext.
+ */
+async function advanceToFreetext(
+  user: ReturnType<typeof userEvent.setup>,
+  hungerLabel = /regular meal/i,
+) {
+  await advanceToQ3(user, hungerLabel);
+  await user.click(screen.getByRole("button", { name: /^next$/i }));
+}
+
+/**
+ * Walk all the way through to the freetext step and submit.
+ * Resolves after the postRecommend promise settles.
+ */
+async function walkAndSubmit(
+  user: ReturnType<typeof userEvent.setup>,
+  hungerLabel = /regular meal/i,
+) {
+  await advanceToFreetext(user, hungerLabel);
+  await user.click(screen.getByRole("button", { name: /find my meal/i }));
 }
 
 // ---------------------------------------------------------------------------
@@ -157,176 +208,1275 @@ function getCta(): HTMLElement {
 // ---------------------------------------------------------------------------
 beforeEach(() => {
   vi.clearAllMocks();
-  // Re-apply the default non-veg persona after clearAllMocks wipes the
-  // return value set in the module mock factory. Per-test overrides call
-  // mockEnsureProfile.mockReturnValue(...) to swap persona.
+  // Reapply the default non-veg persona after clearAllMocks wipes return values.
   mockEnsureProfile.mockReturnValue(NON_VEG_PROFILE);
 });
 
 // ===========================================================================
-// 1. Initial render — static structure
+// Item 12 — Case 7: First load shows only the Q1 step
 // ===========================================================================
-describe("Questions — initial render", () => {
-  it("renders the heading 'How hungry are you?'", () => {
+describe("Questions — first load shows only Q1 step (Item 12)", () => {
+  it("Q1 heading 'How hungry are you?' is present on initial render", () => {
     render(<Questions />);
     expect(
       screen.getByRole("heading", { name: /how hungry are you\?/i }),
     ).toBeInTheDocument();
   });
 
-  it("renders a radiogroup with aria-label 'Hunger level'", () => {
+  it("Q2 heading 'What kind of meal?' is NOT in the DOM on initial render", () => {
+    render(<Questions />);
+    expect(
+      screen.queryByRole("heading", { name: /what kind of meal\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Q3 heading 'Any constraints?' is NOT in the DOM on initial render", () => {
+    render(<Questions />);
+    expect(
+      screen.queryByRole("heading", { name: /any constraints\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("freetext heading 'Anything specific?' is NOT in the DOM on initial render", () => {
+    render(<Questions />);
+    expect(
+      screen.queryByRole("heading", { name: /anything specific\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("footer button reads 'Next' on the Q1 step", () => {
+    render(<Questions />);
+    expect(
+      screen.getByRole("button", { name: /^next$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("'Next' footer button is disabled on Q1 step before any pill is selected", () => {
+    render(<Questions />);
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 8: Progress dots on Q1 (3 dots, first dot active-ringed)
+// ===========================================================================
+describe("Questions — progress dots on Q1 step (Item 12)", () => {
+  it("renders 3 progress dot spans in the header when profile.q3SkipCount=0", () => {
+    render(<Questions />);
+    // ProgressDots renders span dots inside a container with data-testid.
+    const dotsContainer = screen.queryByTestId("progress-dots");
+    expect(dotsContainer).not.toBeNull();
+    const dots = dotsContainer?.querySelectorAll("span") ?? [];
+    expect(dots).toHaveLength(3);
+  });
+
+  it("first dot has the active ring class on Q1 step (current=0)", () => {
+    render(<Questions />);
+    const dotsContainer = screen.queryByTestId("progress-dots");
+    const dots = dotsContainer?.querySelectorAll("span") ?? [];
+    expect(dots[0]?.className).toContain("ring-2");
+    expect(dots[0]?.className).toContain("ring-primary");
+  });
+
+  it("second and third dots do not have the active ring on Q1 step", () => {
+    render(<Questions />);
+    const dotsContainer = screen.queryByTestId("progress-dots");
+    const dots = dotsContainer?.querySelectorAll("span") ?? [];
+    expect(dots[1]?.className).not.toContain("ring-2");
+    expect(dots[2]?.className).not.toContain("ring-2");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 9: No Back button on Q1
+// ===========================================================================
+describe("Questions — no Back button on Q1 step (Item 12)", () => {
+  it("Back button is not in the DOM when step is q1", () => {
+    render(<Questions />);
+    expect(
+      screen.queryByRole("button", { name: /← back/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 10: Q1 Next disabled until hunger is picked
+// ===========================================================================
+describe("Questions — Q1 Next disabled until hunger picked (Item 12)", () => {
+  it("Next is disabled before any Q1 pill is selected", () => {
+    render(<Questions />);
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeDisabled();
+  });
+
+  it("Next is enabled after selecting a Q1 pill", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /light snack/i }));
+
+    expect(screen.getByRole("button", { name: /^next$/i })).not.toBeDisabled();
+  });
+
+  it("Next remains enabled after swapping Q1 selection", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /light snack/i }));
+    await user.click(screen.getByRole("radio", { name: /very hungry/i }));
+
+    expect(screen.getByRole("button", { name: /^next$/i })).not.toBeDisabled();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 11: Q1 → Q2 advances and unmounts Q1
+// ===========================================================================
+describe("Questions — Q1 → Q2 step advance (Item 12)", () => {
+  it("Q2 heading is visible after advancing from Q1", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    expect(
+      screen.getByRole("heading", { name: /what kind of meal\?/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Q1 heading is gone after advancing to Q2", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    expect(
+      screen.queryByRole("heading", { name: /how hungry are you\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Back button is visible after advancing to Q2", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    expect(
+      screen.getByRole("button", { name: /← back/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Next button is still present (type=button) on Q2 step", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    const nextBtn = screen.getByRole("button", { name: /^next$/i });
+    expect(nextBtn).toBeInTheDocument();
+    expect(nextBtn).toHaveAttribute("type", "button");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 12: Q2 Next always enabled
+// ===========================================================================
+describe("Questions — Q2 Next always enabled (Item 12)", () => {
+  it("Next is enabled on Q2 step even with no meal type selected", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    expect(screen.getByRole("button", { name: /^next$/i })).not.toBeDisabled();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 13: Q2 → Q3 advance
+// ===========================================================================
+describe("Questions — Q2 → Q3 step advance (Item 12)", () => {
+  it("Q3 heading 'Any constraints?' is visible after advancing from Q2", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    expect(
+      screen.getByRole("heading", { name: /any constraints\?/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Q2 heading is gone after advancing to Q3", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    expect(
+      screen.queryByRole("heading", { name: /what kind of meal\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Back button is visible on Q3 step", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    expect(
+      screen.getByRole("button", { name: /← back/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Next button is visible on Q3 step", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    expect(screen.getByRole("button", { name: /^next$/i })).toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 14: Q3 → freetext advance
+// ===========================================================================
+describe("Questions — Q3 → freetext step advance (Item 12)", () => {
+  it("freetext heading 'Anything specific?' is visible after advancing from Q3", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByRole("heading", { name: /anything specific\?/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("Q3 chips are gone after advancing to freetext step", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.queryByRole("checkbox", { name: /fast delivery/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("footer button on freetext step reads 'Find my meal'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByRole("button", { name: /find my meal/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("freetext footer button is type='submit'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByRole("button", { name: /find my meal/i }),
+    ).toHaveAttribute("type", "submit");
+  });
+
+  it("there is exactly one submit button on the freetext step", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    const submitButtons = document.querySelectorAll('button[type="submit"]');
+    expect(submitButtons).toHaveLength(1);
+  });
+
+  it("clicking Q3 Next does NOT trigger form submission (postRecommend is not called)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    // Navigate up to Q3 step, then click Next to reach freetext.
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // At this point we are on the freetext step. postRecommend must NOT have been
+    // called — the click on Q3's Next must not have submitted the form.
+    expect(mockPostRecommend).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 15: Progress dots adapt per step
+// ===========================================================================
+describe("Questions — progress dots adapt per step (Item 12)", () => {
+  function getProgressDots() {
+    const container = screen.queryByTestId("progress-dots");
+    return Array.from(container?.querySelectorAll("span") ?? []);
+  }
+
+  it("on Q2 step the second dot is active-ringed (current=1)", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    const dots = getProgressDots();
+    expect(dots[1]?.className).toContain("ring-2");
+    expect(dots[1]?.className).toContain("ring-primary");
+    expect(dots[0]?.className).not.toContain("ring-2");
+    expect(dots[2]?.className).not.toContain("ring-2");
+  });
+
+  it("on Q3 step the third dot is active-ringed (current=2)", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    const dots = getProgressDots();
+    expect(dots[2]?.className).toContain("ring-2");
+    expect(dots[0]?.className).not.toContain("ring-2");
+    expect(dots[1]?.className).not.toContain("ring-2");
+  });
+
+  it("on Q2 step the first dot is bg-primary (visited)", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    const dots = getProgressDots();
+    expect(dots[0]?.className).toContain("bg-primary");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 16: No progress dots on the freetext step
+// ===========================================================================
+describe("Questions — no progress dots on freetext step (Item 12)", () => {
+  it("ProgressDots container is absent on the freetext step", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // ProgressDots is not rendered on freetext — the data-testid container
+    // is therefore absent from the DOM.
+    const dotsContainer = screen.queryByTestId("progress-dots");
+    expect(dotsContainer).toBeNull();
+  });
+
+  it("Back button is still visible on freetext step (header has only Back)", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByRole("button", { name: /← back/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 17: Back preserves Q1 selection
+// ===========================================================================
+describe("Questions — Back preserves Q1 selection (Item 12)", () => {
+  it("Q1 pill is still selected after navigating Q1→Q2→Back", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    // Select "Light snack" on Q1 and advance.
+    await user.click(screen.getByRole("radio", { name: /light snack/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Now on Q2. Click Back.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+
+    // Back on Q1. "Light snack" should still be checked.
+    expect(
+      screen.getByRole("radio", { name: /light snack/i }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 18: Back preserves Q2 selection
+// ===========================================================================
+describe("Questions — Back preserves Q2 selection (Item 12)", () => {
+  it("Q2 pill remains selected after navigating Q2→Q3→Back", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    // Select "Indulgent" on Q2 and advance to Q3.
+    await user.click(screen.getByRole("radio", { name: /indulgent/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Now on Q3. Click Back.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+
+    // Back on Q2. "Indulgent" should still be selected.
+    expect(
+      screen.getByRole("radio", { name: /indulgent/i }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 19: Back preserves Q3 chips and party size
+// ===========================================================================
+describe("Questions — Back preserves Q3 chips and party-size (Item 12)", () => {
+  it("selected Q3 chip and party size are preserved across Q3→freetext→Back", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    // Select "Budget" chip and bump party size to 4.
+    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
+    const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
+    await user.click(increaseBtn);
+    await user.click(increaseBtn);
+    // Default is 2; two increments → 4.
+    expect(screen.getByText("4")).toBeInTheDocument();
+
+    // Advance to freetext.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Now on freetext. Click Back.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+
+    // Back on Q3. Budget chip should still be checked, stepper at 4.
+    expect(
+      screen.getByRole("checkbox", { name: /budget/i }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("4")).toBeInTheDocument();
+  });
+
+  it("Q3 chips and party size survive round-trip: Q3→freetext→Back→Q2→Next→Q3", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    // Select "Budget" and set stepper to 4.
+    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
+    const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
+    await user.click(increaseBtn);
+    await user.click(increaseBtn);
+
+    // Advance to freetext, then go back to Q3.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+    // Now back on Q3 — go back one more to Q2.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+    // Now on Q2 — advance twice to re-enter Q3.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Back on Q3. Selections must still be intact.
+    expect(
+      screen.getByRole("checkbox", { name: /budget/i }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("4")).toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 20: Back preserves freetext value
+// ===========================================================================
+describe("Questions — Back preserves freetext value (Item 12)", () => {
+  it("freetext textarea value is preserved across freetext→Q3→freetext", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // Type into the textarea.
+    const textarea = screen.getByRole("textbox");
+    await user.type(textarea, "extra spicy please");
+
+    // Go back to Q3.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+
+    // Return to freetext.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Value must be preserved.
+    expect(screen.getByRole("textbox")).toHaveValue("extra spicy please");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 21: Q3 skip-collapse → 2 dots + Q2 jumps directly to freetext
+// ===========================================================================
+describe("Questions — Q3 skip-collapse with q3SkipCount=3 (Item 12)", () => {
+  it("Q1 step shows 2 progress dots when q3SkipCount=3", () => {
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    render(<Questions />);
+
+    const dotsContainer = screen.queryByTestId("progress-dots");
+    const dots = dotsContainer?.querySelectorAll("span") ?? [];
+    expect(dots).toHaveLength(2);
+  });
+
+  it("second dot is active-ringed on Q2 step with 2-dot flow", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    const dotsContainer = screen.queryByTestId("progress-dots");
+    const dots = Array.from(dotsContainer?.querySelectorAll("span") ?? []);
+    expect(dots).toHaveLength(2);
+    expect(dots[1]?.className).toContain("ring-2");
+  });
+
+  it("clicking Next from Q2 lands directly on freetext step (skips Q3)", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    render(<Questions />);
+
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Should be on freetext — NOT Q3.
+    expect(
+      screen.getByRole("heading", { name: /anything specific\?/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /any constraints\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Back from freetext returns to Q2 (not Q3) in skip-collapsed flow", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    render(<Questions />);
+
+    await advanceToQ2(user);
+    // Q2 Next → freetext.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Now on freetext. Click Back.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+
+    // Should land on Q2, not Q3.
+    expect(
+      screen.getByRole("heading", { name: /what kind of meal\?/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /any constraints\?/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 22: Veg auto-select still preserved
+// ===========================================================================
+describe("Questions — veg auto-select preserved in per-step flow (Item 12)", () => {
+  it("veg-only chip is pre-selected on first arrival at Q3 for veg persona", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue(VEG_PROFILE);
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    expect(
+      screen.getByRole("checkbox", { name: /veg only/i }),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 23: Submit fires only from freetext step
+// ===========================================================================
+describe("Questions — submit fires only from the freetext step (Item 12)", () => {
+  it("postRecommend is called exactly once after walking to freetext and submitting", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      expect(mockPostRecommend).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("postRecommend is NOT called after clicking Next on Q1", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    expect(mockPostRecommend).not.toHaveBeenCalled();
+  });
+
+  it("postRecommend is NOT called after clicking Next on Q2", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    expect(mockPostRecommend).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 24: Submit body — q2 omitted when never picked
+// ===========================================================================
+describe("Questions — submit body omission rules (Item 12)", () => {
+  it("q2 is absent from answers when Q2 was skipped", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    // Walk Q1→Q2 (skip)→Q3 (skip)→freetext (no input)→submit.
+    await walkAndSubmit(user, /light snack/i);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect("q2" in req.answers, "q2 must be absent when Q2 was skipped").toBe(false);
+    });
+  });
+
+  it("q3 is absent from answers when Q3 was skipped (no chips)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect("q3" in req.answers, "q3 must be absent when no chips selected").toBe(false);
+    });
+  });
+
+  it("partySize is absent from answers when Q3 was skipped", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect("partySize" in req.answers, "partySize must be absent").toBe(false);
+    });
+  });
+
+  it("only answers.q1 is present when Q2, Q3, and freetext are all skipped", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user, /light snack/i);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      const answerKeys = Object.keys(req.answers);
+      expect(answerKeys).toEqual(["q1"]);
+    });
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 25: Submit body — freetext omitted when textarea empty
+// ===========================================================================
+describe("Questions — freetext omitted when textarea is empty (Item 12)", () => {
+  it("freetext key is absent when textarea is left empty", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+    // Do NOT type anything. Submit.
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(
+        "freetext" in req.answers,
+        "freetext must be absent when textarea is empty",
+      ).toBe(false);
+    });
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 26: Submit body — freetext omitted when whitespace-only
+// ===========================================================================
+describe("Questions — freetext omitted when whitespace-only (Item 12)", () => {
+  it("freetext key is absent when textarea contains only spaces and newlines", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+    const textarea = screen.getByRole("textbox");
+    await user.type(textarea, "   ");
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(
+        "freetext" in req.answers,
+        "freetext must be absent when textarea is whitespace-only",
+      ).toBe(false);
+    });
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 27: Submit body — freetext trimmed when included
+// ===========================================================================
+describe("Questions — freetext trimmed before sending (Item 12)", () => {
+  it("freetext value is trimmed of leading/trailing whitespace", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+    const textarea = screen.getByRole("textbox");
+    // Type with leading spaces. userEvent.type doesn't add surrounding spaces
+    // automatically; we clear and set the value via a direct approach.
+    await user.clear(textarea);
+    await user.type(textarea, "  extra spicy  ");
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.answers.freetext).toBe("extra spicy");
+    });
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 28: Submit body — partySize only when budget chip present
+// ===========================================================================
+describe("Questions — partySize in submit body (Item 12)", () => {
+  it("partySize is absent when Q3 has fast-delivery but not budget", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(
+        "partySize" in req.answers,
+        "partySize must be absent when budget chip is not selected",
+      ).toBe(false);
+    });
+  });
+
+  it("partySize === 3 when budget chip is selected and stepper is bumped to 3", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
+    await user.click(screen.getByRole("button", { name: /increase party size/i }));
+    // Default 2 → 3.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.answers.partySize).toBe(3);
+    });
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 29: maxLength enforced on freetext textarea
+// ===========================================================================
+describe("Questions — freetext textarea maxLength (Item 12)", () => {
+  it("freetext textarea maxLength tracks the shared FREETEXT_MAX_CHARS constant", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    const textarea = screen.getByRole("textbox");
+    // FE textarea cap is bound to the same shared constant the BE Zod schema
+    // uses, so the user can never type past what the server will accept.
+    expect(textarea).toHaveAttribute(
+      "maxlength",
+      String(FREETEXT_MAX_CHARS),
+    );
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 30: Loading view replaces step body and footer
+// ===========================================================================
+describe("Questions — loading view replaces step body (Item 12)", () => {
+  it("spinner is in the DOM while the request is in-flight", async () => {
+    const user = userEvent.setup();
+    // Never resolves — keeps the component in loading state.
+    mockPostRecommend.mockReturnValue(new Promise(() => {}));
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toBeInTheDocument();
+    });
+  });
+
+  it("spinner has aria-label='Loading'", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockReturnValue(new Promise(() => {}));
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveAttribute("aria-label", "Loading");
+    });
+  });
+
+  it("freetext heading is NOT visible while loading", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockReturnValue(new Promise(() => {}));
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("heading", { name: /anything specific\?/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("'Find my meal' button is NOT visible while loading", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockReturnValue(new Promise(() => {}));
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("button", { name: /find my meal/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Back button is NOT visible while loading (header row is hidden)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockReturnValue(new Promise(() => {}));
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("button", { name: /← back/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("progress dots are NOT visible while loading", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockReturnValue(new Promise(() => {}));
+    render(<Questions />);
+
+    // Go only to Q2 so dots WOULD be visible if loading showed them.
+    await advanceToQ2(user);
+    // Manually reach freetext and submit.
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q2→Q3
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q3→freetext
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("progress-dots")).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 31: Success view replaces step body and footer
+// ===========================================================================
+describe("Questions — success view (Item 12)", () => {
+  it("DishCard for dishes[0] is rendered on success", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    const card = await screen.findByTestId("dish-card");
+    expect(card).toBeInTheDocument();
+  });
+
+  it("freetext heading and submit button are gone on success", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByTestId("dish-card");
+    expect(
+      screen.queryByRole("heading", { name: /anything specific\?/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /find my meal/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("passes dishes[0] to DishCard (not dishes[1..4])", async () => {
+    const user = userEvent.setup();
+    const response = makeSuccessResponse();
+    mockPostRecommend.mockResolvedValue(response);
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    const card = await screen.findByTestId("dish-card");
+    expect(card).toHaveAttribute("data-dish-id", response.dishes[0].id);
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 32: Error → Try again returns to freetext step with state
+// ===========================================================================
+describe("Questions — error → Try again returns to freetext (Item 12)", () => {
+  it("Try again renders the freetext step (heading + textarea)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+    const textarea = screen.getByRole("textbox");
+    await user.type(textarea, "spicy food");
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await screen.findByRole("button", { name: /try again/i });
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    // The freetext step body is back.
+    expect(
+      screen.getByRole("heading", { name: /anything specific\?/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+  });
+
+  it("freetext textarea value is preserved after Try again", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+    await user.type(screen.getByRole("textbox"), "spicy food");
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await screen.findByRole("button", { name: /try again/i });
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(screen.getByRole("textbox")).toHaveValue("spicy food");
+  });
+
+  it("footer reads 'Find my meal' after Try again (back on freetext step)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByRole("button", { name: /try again/i });
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(
+      screen.getByRole("button", { name: /find my meal/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 33: Skip-count — one increment per mount, even across retry
+// ===========================================================================
+describe("Questions — skip-count one-shot guard across retry (Item 12)", () => {
+  it("q3SkipCount is incremented exactly once across two submit attempts (error then error)", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
+    // Both calls fail.
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Failed", ""),
+    );
+    render(<Questions />);
+
+    // Walk Q1→Q2→Q3 (no chips)→freetext→submit.
+    await walkAndSubmit(user);
+    await screen.findByRole("button", { name: /try again/i });
+
+    // saveProfile called once with q3SkipCount=1.
+    const callsAfterFirst = mockSaveProfile.mock.calls.length;
+    const firstArg = mockSaveProfile.mock.calls[0]?.[0] as UserProfile;
+    expect(firstArg.q3SkipCount).toBe(1);
+
+    // Retry.
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+    await screen.findByRole("button", { name: /try again/i });
+
+    // saveProfile must NOT have been called again with a skip-count bump.
+    expect(mockSaveProfile.mock.calls.length).toBe(callsAfterFirst);
+    const allSkipCounts = mockSaveProfile.mock.calls.map(
+      ([p]) => (p as UserProfile).q3SkipCount,
+    );
+    expect(allSkipCounts.every((n) => n <= 1)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 34: Skip-count NOT incremented when Q3 had a chip selected
+// ===========================================================================
+describe("Questions — skip-count NOT incremented when Q3 chip was picked (Item 12)", () => {
+  it("saveProfile is not called with incremented q3SkipCount when a Q3 chip was selected", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await screen.findByTestId("dish-card");
+
+    const skipBumpCalls = mockSaveProfile.mock.calls.filter(
+      ([p]) => (p as UserProfile).q3SkipCount > 0,
+    );
+    expect(
+      skipBumpCalls,
+      "q3SkipCount must not be bumped when Q3 had a chip selected",
+    ).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 35: Skip-count NOT incremented when Q3 was skip-collapsed
+// ===========================================================================
+describe("Questions — skip-count NOT incremented when Q3 was skip-collapsed (Item 12)", () => {
+  it("q3SkipCount stays at 3 after submit when Q3 was hidden by collapse", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    // With q3SkipCount=3, the flow is Q1→Q2→freetext (no Q3 step).
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q2→freetext
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await screen.findByTestId("dish-card");
+
+    // saveProfile should NOT be called with q3SkipCount > 3.
+    const skipBumpCalls = mockSaveProfile.mock.calls.filter(
+      ([p]) => (p as UserProfile).q3SkipCount > 3,
+    );
+    expect(
+      skipBumpCalls,
+      "q3SkipCount must not increment when Q3 was already collapsed",
+    ).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Item 12 — Case 36: Button types are correct per step
+// ===========================================================================
+describe("Questions — button type='button' on Q1/Q2/Q3, type='submit' on freetext (Item 12)", () => {
+  it("Q1 footer Next is type='button'", () => {
+    render(<Questions />);
+    expect(screen.getByRole("button", { name: /^next$/i })).toHaveAttribute(
+      "type",
+      "button",
+    );
+  });
+
+  it("Q2 footer Next is type='button'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    expect(screen.getByRole("button", { name: /^next$/i })).toHaveAttribute(
+      "type",
+      "button",
+    );
+  });
+
+  it("Q3 footer Next is type='button'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+
+    expect(screen.getByRole("button", { name: /^next$/i })).toHaveAttribute(
+      "type",
+      "button",
+    );
+  });
+
+  it("freetext footer button is type='submit'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByRole("button", { name: /find my meal/i }),
+    ).toHaveAttribute("type", "submit");
+  });
+
+  it("Back button is type='button' (not submit) on every step that shows it", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+
+    expect(
+      screen.getByRole("button", { name: /← back/i }),
+    ).toHaveAttribute("type", "button");
+  });
+});
+
+// ===========================================================================
+// Item 11 regression — Q1 baseline still works through the new per-step flow
+// ===========================================================================
+describe("Questions — Q1 regression (Item 11 must not break)", () => {
+  it("renders the heading 'How hungry are you?' on initial render", () => {
+    render(<Questions />);
+    expect(
+      screen.getByRole("heading", { name: /how hungry are you\?/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a radiogroup with aria-label 'Hunger level' on Q1 step", () => {
     render(<Questions />);
     expect(
       screen.getByRole("radiogroup", { name: /hunger level/i }),
     ).toBeInTheDocument();
   });
 
-  it("renders exactly three pills inside the radiogroup", () => {
+  it("renders exactly three pills inside the Q1 radiogroup", () => {
     render(<Questions />);
     const group = screen.getByRole("radiogroup", { name: /hunger level/i });
     const pills = within(group).getAllByRole("radio");
     expect(pills).toHaveLength(3);
   });
 
-  it("renders a pill labelled 'Light snack'", () => {
-    render(<Questions />);
-    expect(
-      screen.getByRole("radio", { name: /light snack/i }),
-    ).toBeInTheDocument();
-  });
+  it.each([["Light snack"], ["Regular meal"], ["Very hungry"]])(
+    "renders Q1 pill labelled '%s'",
+    (label) => {
+      render(<Questions />);
+      expect(
+        screen.getByRole("radio", { name: new RegExp(label, "i") }),
+      ).toBeInTheDocument();
+    },
+  );
 
-  it("renders a pill labelled 'Regular meal'", () => {
-    render(<Questions />);
-    expect(
-      screen.getByRole("radio", { name: /regular meal/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("renders a pill labelled 'Very hungry'", () => {
-    render(<Questions />);
-    expect(
-      screen.getByRole("radio", { name: /very hungry/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("renders the 'Find my meal' CTA button", () => {
-    render(<Questions />);
-    expect(getCta()).toBeInTheDocument();
-  });
-});
-
-// ===========================================================================
-// 2. CTA disabled state before selection
-// ===========================================================================
-describe("Questions — CTA disabled before selection", () => {
-  it("'Find my meal' CTA is disabled when no pill is selected", () => {
-    render(<Questions />);
-    expect(getCta()).toBeDisabled();
-  });
-
-  it("no pill has aria-checked='true' on initial render", () => {
-    render(<Questions />);
-    const pills = screen.getAllByRole("radio");
-    for (const pill of pills) {
-      expect(pill).toHaveAttribute("aria-checked", "false");
-    }
-  });
-});
-
-// ===========================================================================
-// 3. Pill selection — single-select behaviour
-// ===========================================================================
-describe("Questions — pill selection", () => {
-  it("tapping 'Light snack' sets aria-checked='true' on that pill", async () => {
+  it("tapping a Q1 pill sets aria-checked='true'", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
     await user.click(screen.getByRole("radio", { name: /light snack/i }));
 
-    expect(screen.getByRole("radio", { name: /light snack/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-  });
-
-  it("tapping 'Regular meal' sets aria-checked='true' on that pill", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-
     expect(
-      screen.getByRole("radio", { name: /regular meal/i }),
+      screen.getByRole("radio", { name: /light snack/i }),
     ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("tapping 'Very hungry' sets aria-checked='true' on that pill", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /very hungry/i }));
-
-    expect(screen.getByRole("radio", { name: /very hungry/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-  });
-
-  it("tapping a second pill deselects the first (only one pill is aria-checked at a time)", async () => {
+  it("tapping a second Q1 pill deselects the first", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
     await user.click(screen.getByRole("radio", { name: /light snack/i }));
     await user.click(screen.getByRole("radio", { name: /very hungry/i }));
 
-    expect(screen.getByRole("radio", { name: /light snack/i })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
-    expect(screen.getByRole("radio", { name: /very hungry/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      screen.getByRole("radio", { name: /light snack/i }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("radio", { name: /very hungry/i }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("tapping a second pill leaves the remaining third pill with aria-checked='false'", async () => {
+  it("submit from freetext with Q1=light-snack sends answers.q1='light-snack'", async () => {
     const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /light snack/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await walkAndSubmit(user, /light snack/i);
 
-    expect(screen.getByRole("radio", { name: /very hungry/i })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.answers.q1).toBe("light-snack");
+    });
   });
 
-  it("tapping a pill enables the 'Find my meal' CTA", async () => {
+  it("submit from freetext still renders a DishCard on success", async () => {
     const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await walkAndSubmit(user);
 
-    expect(getCta()).not.toBeDisabled();
+    await screen.findByTestId("dish-card");
   });
 });
 
 // ===========================================================================
-// 3b. Keyboard navigation — arrow keys cycle selection
+// Item 11 regression — Q1 keyboard navigation still works
 // ===========================================================================
-describe("Questions — keyboard navigation on the radiogroup", () => {
-  function focusFirstPill() {
+describe("Questions — Q1 keyboard navigation regression (Item 11)", () => {
+  function focusFirstQ1Pill() {
     const first = screen.getByRole("radio", { name: /light snack/i });
     first.focus();
     return first;
   }
 
-  it("ArrowRight from the first pill selects the second", async () => {
+  it("ArrowRight from the first Q1 pill selects the second", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
-    focusFirstPill();
+    focusFirstQ1Pill();
     await user.keyboard("{ArrowRight}");
 
     expect(
@@ -334,23 +1484,11 @@ describe("Questions — keyboard navigation on the radiogroup", () => {
     ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("ArrowDown from the first pill selects the second (vertical equivalence)", async () => {
+  it("ArrowLeft from the first Q1 pill wraps to the last", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
-    focusFirstPill();
-    await user.keyboard("{ArrowDown}");
-
-    expect(
-      screen.getByRole("radio", { name: /regular meal/i }),
-    ).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("ArrowLeft from the first pill wraps to the last", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    focusFirstPill();
+    focusFirstQ1Pill();
     await user.keyboard("{ArrowLeft}");
 
     expect(
@@ -358,7 +1496,7 @@ describe("Questions — keyboard navigation on the radiogroup", () => {
     ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("ArrowRight wraps from the last pill back to the first", async () => {
+  it("ArrowRight from the last Q1 pill wraps to the first", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
@@ -369,551 +1507,40 @@ describe("Questions — keyboard navigation on the radiogroup", () => {
       screen.getByRole("radio", { name: /light snack/i }),
     ).toHaveAttribute("aria-checked", "true");
   });
-
-  it("moves focus to the newly selected pill so the user can keep cycling", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    focusFirstPill();
-    await user.keyboard("{ArrowRight}");
-
-    expect(screen.getByRole("radio", { name: /regular meal/i })).toHaveFocus();
-  });
-
-  it("ignores non-arrow keys (e.g. Tab does not change selection)", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.keyboard("{Tab}");
-
-    expect(
-      screen.getByRole("radio", { name: /regular meal/i }),
-    ).toHaveAttribute("aria-checked", "true");
-  });
 });
 
 // ===========================================================================
-// 4. Submit — happy path
+// Item 11 regression — Q2 section render and selection (adapted for per-step)
 // ===========================================================================
-describe("Questions — form submission success", () => {
-  it("calls postRecommend exactly once when the form is submitted", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      expect(mockPostRecommend).toHaveBeenCalledOnce();
-    });
-  });
-
-  it("sends answers.q1 = 'light-snack' when 'Light snack' is selected", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /light snack/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q1).toBe("light-snack");
-    });
-  });
-
-  it("sends answers.q1 = 'regular-meal' when 'Regular meal' is selected", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q1).toBe("regular-meal");
-    });
-  });
-
-  it("sends answers.q1 = 'very-hungry' when 'Very hungry' is selected", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /very hungry/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q1).toBe("very-hungry");
-    });
-  });
-
-  it("includes a passiveContext block in the submitted request", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.passiveContext).toBeDefined();
-      expect(typeof req.passiveContext.time).toBe("string");
-      expect(req.passiveContext.location).toBeDefined();
-    });
-  });
-
-  it("includes a profileSignal block with dietaryPattern, topCuisines, avgOrderValue", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.profileSignal.dietaryPattern).toBe("non-veg");
-      expect(req.profileSignal.topCuisines).toEqual(["Biryani", "North Indian"]);
-      expect(req.profileSignal.avgOrderValue).toBe(280);
-    });
-  });
-
-  it("does not include userId in the profileSignal block sent over the wire", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.profileSignal).not.toHaveProperty("userId");
-    });
-  });
-});
-
-// ===========================================================================
-// 5. Loading state
-// ===========================================================================
-describe("Questions — loading state", () => {
-  it("shows a spinner (role='status') while the request is in-flight", async () => {
-    const user = userEvent.setup();
-    // Never resolves during this test — keeps the component in loading state.
-    mockPostRecommend.mockReturnValue(new Promise(() => {}));
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      expect(screen.getByRole("status")).toBeInTheDocument();
-    });
-  });
-
-  it("disables the 'Find my meal' CTA while the request is in-flight", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockReturnValue(new Promise(() => {}));
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      expect(getCta()).toBeDisabled();
-    });
-  });
-
-  it("does not call postRecommend a second time when CTA is clicked while loading", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockReturnValue(new Promise(() => {}));
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    // Wait for loading state to be applied.
-    await waitFor(() => {
-      expect(getCta()).toBeDisabled();
-    });
-
-    // Try clicking again — CTA is disabled so user-event won't fire.
-    await user.click(getCta());
-
-    // postRecommend should still have been called only once.
-    expect(mockPostRecommend).toHaveBeenCalledOnce();
-  });
-});
-
-// ===========================================================================
-// 6. Success state (Item 10: heading line + DishCard sentinel for dishes[0])
-// ===========================================================================
-describe("Questions — success state", () => {
-  it("renders the success heading line after a successful response", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    // The spec locks the heading copy as "Here's what I'd order:" (§Deliverables).
-    await screen.findByText(/here'?s what i'?d order/i);
-  });
-
-  it("renders the DishCard sentinel after a successful response", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    const card = await screen.findByTestId("dish-card");
-    expect(card).toBeInTheDocument();
-  });
-
-  it("passes dishes[0] (not dishes[1..4]) to DishCard", async () => {
-    const user = userEvent.setup();
-    const response = makeSuccessResponse();
-    mockPostRecommend.mockResolvedValue(response);
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    const card = await screen.findByTestId("dish-card");
-    expect(card).toHaveAttribute("data-dish-id", response.dishes[0].id);
-  });
-
-  it("renders exactly one DishCard sentinel (not all 5 dishes)", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-    expect(screen.getAllByTestId("dish-card")).toHaveLength(1);
-  });
-
-  it("does not render the old 'Received N dishes.' placeholder text", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-    expect(screen.queryByText(/received \d+ dishes/i)).not.toBeInTheDocument();
-  });
-
-  it("does not render a <pre> JSON dump in the success state", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    const { container } = render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-    expect(container.querySelector("pre")).toBeNull();
-  });
-
-  it("hides the spinner after a successful response", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  });
-});
-
-// ===========================================================================
-// 7. Error state — RecommendApiError
-// ===========================================================================
-describe("Questions — error state from RecommendApiError", () => {
-  it("renders the envelope message when postRecommend throws a RecommendApiError", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError(
-        "mcp_error",
-        "Swiggy MCP timed out",
-        "req-001",
-      ),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByText("Swiggy MCP timed out");
-  });
-
-  it("renders a 'Try again' button after a RecommendApiError", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("internal_error", "Request failed (500)", ""),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByRole("button", { name: /try again/i });
-  });
-
-  it("renders the error message text, not the code or requestId", async () => {
-    const user = userEvent.setup();
-    const message = "Something the backend said";
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("model_error", message, "req-xyz"),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByText(message);
-    expect(screen.queryByText("model_error")).not.toBeInTheDocument();
-    expect(screen.queryByText("req-xyz")).not.toBeInTheDocument();
-  });
-
-  it("hides the spinner after a RecommendApiError", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("internal_error", "Request failed (500)", ""),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByRole("button", { name: /try again/i });
-
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  });
-});
-
-// ===========================================================================
-// 8. "Try again" — returns to idle
-// ===========================================================================
-describe("Questions — 'Try again' button behaviour", () => {
-  it("tapping 'Try again' enables the 'Find my meal' CTA again", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("internal_error", "Request failed (500)", ""),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    const tryAgain = await screen.findByRole("button", { name: /try again/i });
-    await user.click(tryAgain);
-
-    // The hunger level is still selected, so the CTA should be enabled.
-    expect(getCta()).not.toBeDisabled();
-  });
-
-  it("the previously selected pill remains aria-checked='true' after 'Try again'", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("internal_error", "Request failed (500)", ""),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /very hungry/i }));
-    await user.click(getCta());
-
-    const tryAgain = await screen.findByRole("button", { name: /try again/i });
-    await user.click(tryAgain);
-
-    expect(screen.getByRole("radio", { name: /very hungry/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-  });
-
-  it("'Try again' removes the error message from the screen", async () => {
-    const user = userEvent.setup();
-    const errorMessage = "Swiggy MCP timed out";
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("mcp_error", errorMessage, "req-001"),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByText(errorMessage);
-
-    const tryAgain = screen.getByRole("button", { name: /try again/i });
-    await user.click(tryAgain);
-
-    expect(screen.queryByText(errorMessage)).not.toBeInTheDocument();
-  });
-
-  it("'Try again' removes the 'Try again' button itself from the screen (returns to idle)", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("internal_error", "Request failed (500)", ""),
-    );
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    const tryAgain = await screen.findByRole("button", { name: /try again/i });
-    await user.click(tryAgain);
-
-    expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
-  });
-
-  it("after 'Try again', a second submit works and calls postRecommend again", async () => {
-    const user = userEvent.setup();
-    // First call fails, second call succeeds.
-    mockPostRecommend
-      .mockRejectedValueOnce(
-        new RecommendApiError("internal_error", "Request failed (500)", ""),
-      )
-      .mockResolvedValueOnce(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    const tryAgain = await screen.findByRole("button", { name: /try again/i });
-    await user.click(tryAgain);
-
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-    expect(mockPostRecommend).toHaveBeenCalledTimes(2);
-  });
-});
-
-// ===========================================================================
-// 9. Error state — unexpected (non-RecommendApiError) throw
-// ===========================================================================
-describe("Questions — error state from unexpected throw", () => {
-  it("renders 'Something went wrong.' when postRecommend throws a TypeError", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(new TypeError("Network request failed"));
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByText("Something went wrong.");
-  });
-
-  it("renders 'Something went wrong.' and a 'Try again' button for any non-RecommendApiError", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(new Error("Unexpected internal error"));
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByText("Something went wrong.");
-    expect(
-      screen.getByRole("button", { name: /try again/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("does not render the network error's original message (only the fallback)", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockRejectedValue(new TypeError("Network request failed"));
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByText("Something went wrong.");
-    expect(
-      screen.queryByText("Network request failed"),
-    ).not.toBeInTheDocument();
-  });
-});
-
-// ===========================================================================
-// Item 11 — New tests below
-// ===========================================================================
-
-// ===========================================================================
-// 10. Q1 regression — Item 11 must not break Phase A baseline
-// ===========================================================================
-describe("Questions — Q1 regression (Item 11 must not break Phase A)", () => {
-  it("selecting a Q1 pill still enables the CTA (regression)", async () => {
+describe("Questions — Q2 section render and single-select regression (Item 11)", () => {
+  it("renders Q2 heading 'What kind of meal?' after advancing from Q1", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
+    await advanceToQ2(user);
 
-    expect(getCta()).not.toBeDisabled();
-  });
-
-  it("submit with Q1-only still calls postRecommend once and sends answers.q1 (regression)", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /light snack/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      expect(mockPostRecommend).toHaveBeenCalledOnce();
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q1).toBe("light-snack");
-    });
-  });
-
-  it("Q1-only submit still renders a DishCard on success (regression)", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-  });
-});
-
-// ===========================================================================
-// 11. Q2 section — render, single-select, wire payload
-// ===========================================================================
-describe("Questions — Q2 section render and single-select (Item 11)", () => {
-  it("renders the Q2 heading 'What kind of meal?'", () => {
-    render(<Questions />);
     expect(
       screen.getByRole("heading", { name: /what kind of meal\?/i }),
     ).toBeInTheDocument();
   });
 
-  it("renders a radiogroup with aria-label 'Meal type'", () => {
+  it("renders a radiogroup with aria-label 'Meal type' on Q2 step", async () => {
+    const user = userEvent.setup();
     render(<Questions />);
+
+    await advanceToQ2(user);
+
     expect(
       screen.getByRole("radiogroup", { name: /meal type/i }),
     ).toBeInTheDocument();
   });
 
-  it("renders exactly four pills inside the Q2 radiogroup", () => {
+  it("renders exactly four pills inside the Q2 radiogroup", async () => {
+    const user = userEvent.setup();
     render(<Questions />);
+
+    await advanceToQ2(user);
+
     const group = screen.getByRole("radiogroup", { name: /meal type/i });
     const pills = within(group).getAllByRole("radio");
     expect(pills).toHaveLength(4);
@@ -924,42 +1551,51 @@ describe("Questions — Q2 section render and single-select (Item 11)", () => {
     ["Healthy"],
     ["Indulgent"],
     ["Surprise me"],
-  ])("renders Q2 pill labelled '%s'", (label) => {
+  ])("renders Q2 pill labelled '%s'", async (label) => {
+    const user = userEvent.setup();
     render(<Questions />);
-    expect(screen.getByRole("radio", { name: new RegExp(label, "i") })).toBeInTheDocument();
+
+    await advanceToQ2(user);
+
+    expect(
+      screen.getByRole("radio", { name: new RegExp(label, "i") }),
+    ).toBeInTheDocument();
   });
 
   it("tapping a Q2 pill sets aria-checked='true' on that pill", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ2(user);
     await user.click(screen.getByRole("radio", { name: /healthy/i }));
 
-    expect(screen.getByRole("radio", { name: /healthy/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      screen.getByRole("radio", { name: /healthy/i }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("tapping another Q2 pill swaps selection — only one Q2 pill is checked at a time", async () => {
+  it("swapping Q2 pill deselects the previous one", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ2(user);
     await user.click(screen.getByRole("radio", { name: /healthy/i }));
     await user.click(screen.getByRole("radio", { name: /indulgent/i }));
 
-    expect(screen.getByRole("radio", { name: /healthy/i })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
-    expect(screen.getByRole("radio", { name: /indulgent/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      screen.getByRole("radio", { name: /healthy/i }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("radio", { name: /indulgent/i }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("no Q2 pills are selected on initial render", () => {
+  it("no Q2 pills are selected on first arrival at Q2 step", async () => {
+    const user = userEvent.setup();
     render(<Questions />);
+
+    await advanceToQ2(user);
+
     const group = screen.getByRole("radiogroup", { name: /meal type/i });
     const pills = within(group).getAllByRole("radio");
     for (const pill of pills) {
@@ -967,33 +1603,21 @@ describe("Questions — Q2 section render and single-select (Item 11)", () => {
     }
   });
 
-  it("submit sends answers.q2 with the correct enum code when a Q2 pill is selected", async () => {
+  it("submit sends answers.q2='comfort-favourite' when that pill is picked", async () => {
     const user = userEvent.setup();
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
+    await advanceToQ2(user);
     await user.click(screen.getByRole("radio", { name: /comfort favourite/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    // Advance Q2→Q3→freetext→submit.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
       expect(req.answers.q2).toBe("comfort-favourite");
-    });
-  });
-
-  it("submit sends answers.q2 = 'indulgent' when 'Indulgent' is selected", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /indulgent/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q2).toBe("indulgent");
     });
   });
 
@@ -1002,56 +1626,51 @@ describe("Questions — Q2 section render and single-select (Item 11)", () => {
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    // Only select Q1, leave Q2 untouched.
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    // Skip Q2 entirely, go straight through.
+    await walkAndSubmit(user);
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect("q2" in req.answers, "q2 must be absent when no Q2 pill was selected").toBe(false);
+      expect("q2" in req.answers).toBe(false);
     });
-  });
-
-  it("Q1 arrow keys do not move Q2 selection (groups are independent)", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    // Select 'Healthy' in Q2 first, then operate arrow keys inside Q1.
-    await user.click(screen.getByRole("radio", { name: /healthy/i }));
-    screen.getByRole("radio", { name: /light snack/i }).focus();
-    await user.keyboard("{ArrowRight}");
-
-    // Q2 selection should still be 'Healthy' — unchanged by Q1 arrow key.
-    expect(screen.getByRole("radio", { name: /healthy/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
   });
 });
 
 // ===========================================================================
-// 12. Q3 section — render, multi-select, role="checkbox", wire payload
+// Item 11 regression — Q3 render, multi-select, wire payload (per-step)
 // ===========================================================================
-describe("Questions — Q3 section render and multi-select (Item 11)", () => {
-  it("renders the Q3 heading 'Any constraints?'", () => {
+describe("Questions — Q3 section render and multi-select regression (Item 11)", () => {
+  it("renders Q3 heading 'Any constraints?' after advancing to Q3 step", async () => {
+    const user = userEvent.setup();
     render(<Questions />);
+
+    await advanceToQ3(user);
+
     expect(
       screen.getByRole("heading", { name: /any constraints\?/i }),
     ).toBeInTheDocument();
   });
 
-  it.each([
-    ["Veg only"],
-    ["Fast delivery"],
-    ["Budget"],
-    ["High-rated"],
-  ])("renders Q3 chip labelled '%s'", (label) => {
-    render(<Questions />);
-    expect(screen.getByRole("checkbox", { name: new RegExp(label, "i") })).toBeInTheDocument();
-  });
+  it.each([["Veg only"], ["Fast delivery"], ["Budget"], ["High-rated"]])(
+    "renders Q3 chip labelled '%s'",
+    async (label) => {
+      const user = userEvent.setup();
+      render(<Questions />);
 
-  it("Q3 chips have role='checkbox', not role='radio'", () => {
+      await advanceToQ3(user);
+
+      expect(
+        screen.getByRole("checkbox", { name: new RegExp(label, "i") }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("Q3 chips have role='checkbox', not role='radio'", async () => {
+    const user = userEvent.setup();
     render(<Questions />);
+
+    await advanceToQ3(user);
+
     const budgetChip = screen.getByRole("checkbox", { name: /budget/i });
     expect(budgetChip).toHaveAttribute("role", "checkbox");
   });
@@ -1060,30 +1679,29 @@ describe("Questions — Q3 section render and multi-select (Item 11)", () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
     await user.click(screen.getByRole("checkbox", { name: /high-rated/i }));
 
-    expect(screen.getByRole("checkbox", { name: /fast delivery/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    expect(screen.getByRole("checkbox", { name: /high-rated/i })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(
+      screen.getByRole("checkbox", { name: /fast delivery/i }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("checkbox", { name: /high-rated/i }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("tapping a selected Q3 chip deselects it (toggle behaviour)", async () => {
+  it("tapping a selected Q3 chip deselects it (toggle)", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
     await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
 
-    expect(screen.getByRole("checkbox", { name: /fast delivery/i })).toHaveAttribute(
-      "aria-checked",
-      "false",
-    );
+    expect(
+      screen.getByRole("checkbox", { name: /fast delivery/i }),
+    ).toHaveAttribute("aria-checked", "false");
   });
 
   it("submit sends answers.q3 as array with selected chip codes", async () => {
@@ -1091,9 +1709,10 @@ describe("Questions — Q3 section render and multi-select (Item 11)", () => {
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /high-rated/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
@@ -1101,54 +1720,42 @@ describe("Questions — Q3 section render and multi-select (Item 11)", () => {
     });
   });
 
-  it("submit sends answers.q3 containing both selected chips in insertion order", async () => {
+  it("submit body has no 'q3' key when no Q3 chips are selected", async () => {
     const user = userEvent.setup();
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("checkbox", { name: /veg only/i }));
-    await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await walkAndSubmit(user);
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q3).toEqual(["veg-only", "fast-delivery"]);
-    });
-  });
-
-  it("submit body has no 'q3' key when no Q3 chips are selected (field omitted, not empty array)", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    // Use non-veg profile (default) — no veg auto-select.
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect("q3" in req.answers, "q3 must be absent when no chips selected").toBe(false);
+      expect("q3" in req.answers).toBe(false);
     });
   });
 });
 
 // ===========================================================================
-// 13. Veg auto-select and non-veg baseline (Item 11)
+// Item 11 regression — veg auto-select (per-step)
 // ===========================================================================
-describe("Questions — veg auto-select (Item 11)", () => {
-  it("veg-only chip is pre-selected on first render when profile.dietaryPattern is 'veg'", () => {
+describe("Questions — veg auto-select regression (Item 11)", () => {
+  it("veg-only chip is pre-selected on first render of Q3 when dietaryPattern='veg'", async () => {
+    const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue(VEG_PROFILE);
     render(<Questions />);
+
+    await advanceToQ3(user);
 
     expect(
       screen.getByRole("checkbox", { name: /veg only/i }),
     ).toHaveAttribute("aria-checked", "true");
   });
 
-  it("no Q3 chips are pre-selected for a non-veg persona", () => {
+  it("no Q3 chips are pre-selected for the non-veg persona", async () => {
+    const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue(NON_VEG_PROFILE);
     render(<Questions />);
+
+    await advanceToQ3(user);
 
     const checkboxes = screen.getAllByRole("checkbox");
     for (const cb of checkboxes) {
@@ -1156,123 +1763,75 @@ describe("Questions — veg auto-select (Item 11)", () => {
     }
   });
 
-  it("user can deselect the veg auto-selected chip", async () => {
+  it("user can deselect the veg auto-selected chip on Q3 step", async () => {
     const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue(VEG_PROFILE);
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /veg only/i }));
 
     expect(
       screen.getByRole("checkbox", { name: /veg only/i }),
     ).toHaveAttribute("aria-checked", "false");
   });
-
-  it("after deselecting veg auto-select, submit body has no 'q3' key (field omitted)", async () => {
-    const user = userEvent.setup();
-    mockEnsureProfile.mockReturnValue(VEG_PROFILE);
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    // Deselect the auto-selected veg-only chip.
-    await user.click(screen.getByRole("checkbox", { name: /veg only/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect("q3" in req.answers).toBe(false);
-    });
-  });
-
-  it("veg auto-selected chip is included in q3 array on submit when not deselected", async () => {
-    const user = userEvent.setup();
-    mockEnsureProfile.mockReturnValue(VEG_PROFILE);
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.q3).toContain("veg-only");
-    });
-  });
 });
 
 // ===========================================================================
-// 14. Budget chip → party-size stepper (Item 11)
+// Item 11 regression — budget chip → party-size stepper (per-step: on Q3)
 // ===========================================================================
-describe("Questions — budget chip reveals party-size stepper (Item 11)", () => {
-  it("party-size stepper is NOT visible when budget is not selected", () => {
-    render(<Questions />);
-
-    expect(screen.queryByLabelText(/decrease party size/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/increase party size/i)).not.toBeInTheDocument();
-  });
-
-  it("party-size stepper becomes visible when the budget chip is selected", async () => {
+describe("Questions — budget chip party-size stepper regression (Item 11)", () => {
+  it("party-size stepper is NOT visible on Q3 step when budget is not selected", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
+
+    expect(
+      screen.queryByRole("button", { name: /increase party size/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("party-size stepper becomes visible when budget chip is selected on Q3", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
 
     expect(
       screen.getByRole("button", { name: /increase party size/i }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /decrease party size/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("party-size stepper is labelled 'How many people?'", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
-
-    expect(screen.getByText(/how many people\?/i)).toBeInTheDocument();
   });
 
   it("stepper defaults to 2 when budget is first selected", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
 
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
-  it("stepper '+' button increments the displayed value", async () => {
+  it("stepper '+' increments the displayed value", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
     await user.click(screen.getByRole("button", { name: /increase party size/i }));
 
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
-  it("stepper '−' button decrements the displayed value", async () => {
+  it("stepper '+' is disabled at max value (10)", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
-    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
-    // Increment first so we have room to decrement.
-    await user.click(screen.getByRole("button", { name: /increase party size/i }));
-    await user.click(screen.getByRole("button", { name: /decrease party size/i }));
-
-    expect(screen.getByText("2")).toBeInTheDocument();
-  });
-
-  it("stepper '+' button is disabled at max value (10)", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
     const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
-    // Click 8 times: 2 → 10.
     for (let i = 0; i < 8; i++) {
       await user.click(increaseBtn);
     }
@@ -1281,43 +1840,16 @@ describe("Questions — budget chip reveals party-size stepper (Item 11)", () =>
     expect(screen.getByText("10")).toBeInTheDocument();
   });
 
-  it("stepper '+' does not exceed 10 even when clicked repeatedly", async () => {
+  it("stepper '−' is disabled at min value (1)", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
-    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
-    const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
-    // Click more than 8 times.
-    for (let i = 0; i < 12; i++) {
-      await user.click(increaseBtn);
-    }
-
-    expect(screen.getByText("10")).toBeInTheDocument();
-  });
-
-  it("stepper '−' button is disabled at min value (1)", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
     const decreaseBtn = screen.getByRole("button", { name: /decrease party size/i });
-    // Click once: 2 → 1.
     await user.click(decreaseBtn);
 
     expect(decreaseBtn).toBeDisabled();
-    expect(screen.getByText("1")).toBeInTheDocument();
-  });
-
-  it("stepper '−' does not go below 1 even when clicked repeatedly", async () => {
-    const user = userEvent.setup();
-    render(<Questions />);
-
-    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
-    const decreaseBtn = screen.getByRole("button", { name: /decrease party size/i });
-    for (let i = 0; i < 5; i++) {
-      await user.click(decreaseBtn);
-    }
-
     expect(screen.getByText("1")).toBeInTheDocument();
   });
 
@@ -1325,54 +1857,44 @@ describe("Questions — budget chip reveals party-size stepper (Item 11)", () =>
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
 
-    expect(screen.queryByLabelText(/decrease party size/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/increase party size/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /increase party size/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("stepper resets to 2 when budget is deselected then re-selected", async () => {
+  it("stepper resets to 2 when budget is deselected and re-selected", async () => {
     const user = userEvent.setup();
     render(<Questions />);
 
+    await advanceToQ3(user);
     const budgetChip = screen.getByRole("checkbox", { name: /budget/i });
-
-    // Select budget, increment to 7.
     await user.click(budgetChip);
     const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
     for (let i = 0; i < 5; i++) {
       await user.click(increaseBtn);
     }
-    expect(screen.getByText("7")).toBeInTheDocument();
+    await user.click(budgetChip); // deselect
+    await user.click(budgetChip); // re-select
 
-    // Deselect budget — stepper hidden.
-    await user.click(budgetChip);
-    expect(screen.queryByRole("button", { name: /increase party size/i })).not.toBeInTheDocument();
-
-    // Re-select budget — stepper reappears at default 2, not 7.
-    await user.click(budgetChip);
     expect(screen.getByText("2")).toBeInTheDocument();
   });
-});
 
-// ===========================================================================
-// 15. partySize on the wire (Item 11)
-// ===========================================================================
-describe("Questions — partySize in the request body (Item 11)", () => {
-  it("submit body includes partySize when budget is selected and stepper is at 4", async () => {
+  it("submit includes partySize when budget chip is selected and stepper is at 4", async () => {
     const user = userEvent.setup();
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /budget/i }));
-    // Increment from default 2 to 4.
     const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
     await user.click(increaseBtn);
     await user.click(increaseBtn);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
@@ -1380,70 +1902,34 @@ describe("Questions — partySize in the request body (Item 11)", () => {
     });
   });
 
-  it("submit body has no 'partySize' key at all when budget is not selected", async () => {
+  it("submit body has no 'partySize' key when budget is not selected", async () => {
     const user = userEvent.setup();
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
+    await advanceToQ3(user);
     await user.click(screen.getByRole("checkbox", { name: /high-rated/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(
-        "partySize" in req.answers,
-        "partySize must be absent from the wire body when budget is not selected",
-      ).toBe(false);
-    });
-  });
-
-  it("submit body has no 'partySize' key when no Q3 chips are selected", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
       expect("partySize" in req.answers).toBe(false);
     });
   });
-
-  it("partySize value reflects stepper state at the time of submit", async () => {
-    const user = userEvent.setup();
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
-    const decreaseBtn = screen.getByRole("button", { name: /decrease party size/i });
-    // 2 → 1
-    await user.click(decreaseBtn);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect(req.answers.partySize).toBe(1);
-    });
-  });
 });
 
 // ===========================================================================
-// 16. Q3 skip-count logic (Item 11)
+// Item 11 regression — Q3 skip-count logic (per-step)
 // ===========================================================================
-describe("Questions — Q3 skip-count increment (Item 11)", () => {
-  it("saveProfile is called with q3SkipCount incremented by 1 when Q3 is empty on submit (success path)", async () => {
+describe("Questions — Q3 skip-count regression (Item 11)", () => {
+  it("saveProfile is called with q3SkipCount+1 when Q3 is empty on submit (success)", async () => {
     const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await walkAndSubmit(user);
 
     await screen.findByTestId("dish-card");
 
@@ -1452,75 +1938,15 @@ describe("Questions — Q3 skip-count increment (Item 11)", () => {
     );
   });
 
-  it("saveProfile is NOT called with a bumped q3SkipCount when a Q3 chip is selected on submit", async () => {
-    const user = userEvent.setup();
-    mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-
-    // saveProfile should not be called with an incremented q3SkipCount.
-    const calls = mockSaveProfile.mock.calls as Array<[UserProfile]>;
-    const wasIncremented = calls.some(
-      ([profile]) => (profile as UserProfile).q3SkipCount > 0,
-    );
-    expect(wasIncremented, "q3SkipCount must not be incremented when Q3 has selections").toBe(
-      false,
-    );
-  });
-
-  it("skip-count retry guard: first submit increments q3SkipCount, retry-after-error does NOT increment again", async () => {
-    const user = userEvent.setup();
-    mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
-    // First call fails, second resolves.
-    mockPostRecommend
-      .mockRejectedValueOnce(new RecommendApiError("internal_error", "Request failed (500)", ""))
-      .mockResolvedValueOnce(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    // Wait for the error state.
-    await screen.findByRole("button", { name: /try again/i });
-
-    // saveProfile should have been called once with q3SkipCount: 1.
-    const callsAfterFirstSubmit = mockSaveProfile.mock.calls.length;
-    const firstCallArg = mockSaveProfile.mock.calls[0]?.[0] as UserProfile;
-    expect(firstCallArg.q3SkipCount).toBe(1);
-
-    // Now retry (still empty Q3).
-    const tryAgain = screen.getByRole("button", { name: /try again/i });
-    await user.click(tryAgain);
-    await user.click(getCta());
-
-    await screen.findByTestId("dish-card");
-
-    // saveProfile should NOT have been called an additional time with q3SkipCount: 2.
-    const callsAfterRetry = mockSaveProfile.mock.calls.length;
-    // The guard ensures at most one increment per mount lifecycle.
-    const allArgs = mockSaveProfile.mock.calls.map(([p]) => (p as UserProfile).q3SkipCount);
-    expect(allArgs.every((count) => count <= 1), "q3SkipCount must not exceed 1 across retry").toBe(true);
-    // Total calls after retry must equal calls after first submit (no second increment call).
-    expect(callsAfterRetry).toBe(callsAfterFirstSubmit);
-  });
-
-  it("skip-count is incremented even on first submit failure (error path)", async () => {
+  it("skip-count is incremented even on submit failure", async () => {
     const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
     mockPostRecommend.mockRejectedValue(
-      new RecommendApiError("internal_error", "Request failed (500)", ""),
+      new RecommendApiError("internal_error", "Failed", ""),
     );
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
+    await walkAndSubmit(user);
     await screen.findByRole("button", { name: /try again/i });
 
     expect(mockSaveProfile).toHaveBeenCalledWith(
@@ -1528,7 +1954,7 @@ describe("Questions — Q3 skip-count increment (Item 11)", () => {
     );
   });
 
-  it("saveProfile is called exactly once per mount regardless of retry (one-shot guard)", async () => {
+  it("saveProfile is called exactly once per mount across retry (one-shot guard)", async () => {
     const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue({ ...NON_VEG_PROFILE, q3SkipCount: 0 });
     mockPostRecommend
@@ -1536,37 +1962,40 @@ describe("Questions — Q3 skip-count increment (Item 11)", () => {
       .mockResolvedValueOnce(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await walkAndSubmit(user);
     await screen.findByRole("button", { name: /try again/i });
 
     const tryAgain = screen.getByRole("button", { name: /try again/i });
     await user.click(tryAgain);
-    await user.click(getCta());
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
     await screen.findByTestId("dish-card");
 
-    // saveProfile must have been called exactly once with a skip-count bump.
-    const skipCountBumpCalls = mockSaveProfile.mock.calls.filter(
+    const skipBumpCalls = mockSaveProfile.mock.calls.filter(
       ([p]) => (p as UserProfile).q3SkipCount > 0,
     );
-    expect(skipCountBumpCalls).toHaveLength(1);
+    expect(skipBumpCalls).toHaveLength(1);
   });
 });
 
 // ===========================================================================
-// 17. Q3 skip-collapse at threshold (Item 11)
+// Item 11 regression — Q3 skip-collapse (per-step)
 // ===========================================================================
-describe("Questions — Q3 skip-collapse when q3SkipCount >= 3 (Item 11)", () => {
-  it("Q3 heading is not rendered when q3SkipCount is 3", () => {
+describe("Questions — Q3 skip-collapse regression (Item 11)", () => {
+  it("Q3 heading is not rendered (ever) when q3SkipCount=3", async () => {
+    const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
     render(<Questions />);
+
+    // Walk to Q2 and advance — should go straight to freetext.
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
 
     expect(
       screen.queryByRole("heading", { name: /any constraints\?/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("Q3 chips are not rendered when q3SkipCount is 3", () => {
+  it("Q3 chips are never rendered when q3SkipCount=3", () => {
     mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
     render(<Questions />);
 
@@ -1576,92 +2005,198 @@ describe("Questions — Q3 skip-collapse when q3SkipCount >= 3 (Item 11)", () =>
     expect(screen.queryByRole("checkbox", { name: /high-rated/i })).not.toBeInTheDocument();
   });
 
-  it("party-size stepper is not visible when Q3 is collapsed", () => {
-    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
-    render(<Questions />);
-
-    expect(screen.queryByRole("button", { name: /increase party size/i })).not.toBeInTheDocument();
-  });
-
-  it("Q1 and Q2 sections still render when Q3 is collapsed", () => {
-    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
-    render(<Questions />);
-
-    expect(
-      screen.getByRole("heading", { name: /how hungry are you\?/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: /what kind of meal\?/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("submit body has no 'q3' key when Q3 is collapsed (q3SkipCount >= 3)", async () => {
+  it("skip-count is NOT incremented when Q3 is collapsed (showQ3=false)", async () => {
     const user = userEvent.setup();
     mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect("q3" in req.answers, "q3 must be absent when Q3 section is collapsed").toBe(false);
-    });
-  });
-
-  it("submit body has no 'partySize' key when Q3 is collapsed (q3SkipCount >= 3)", async () => {
-    const user = userEvent.setup();
-    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
-
-    await waitFor(() => {
-      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      expect("partySize" in req.answers, "partySize must be absent when Q3 is collapsed").toBe(
-        false,
-      );
-    });
-  });
-
-  it("skip-count is NOT incremented when Q3 is collapsed (showQ3 is false)", async () => {
-    const user = userEvent.setup();
-    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
-    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
-    render(<Questions />);
-
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q2→freetext
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await screen.findByTestId("dish-card");
 
-    // saveProfile should not be called with a skip-count bump when Q3 is hidden.
     const skipBumpCalls = mockSaveProfile.mock.calls.filter(
       ([p]) => (p as UserProfile).q3SkipCount > 3,
     );
-    expect(skipBumpCalls, "skip count must not go above 3 when Q3 is already collapsed").toHaveLength(0);
+    expect(skipBumpCalls).toHaveLength(0);
   });
 
-  it("veg auto-select does NOT apply when Q3 is collapsed (q3SkipCount >= 3)", async () => {
+  it("veg auto-select does NOT apply when Q3 is collapsed", async () => {
     const user = userEvent.setup();
-    // Veg persona but skip count at threshold — Q3 is hidden.
-    mockEnsureProfile.mockReturnValue({
-      ...VEG_PROFILE,
-      q3SkipCount: 3,
-    });
+    mockEnsureProfile.mockReturnValue({ ...VEG_PROFILE, q3SkipCount: 3 });
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await user.click(screen.getByRole("radio", { name: /regular meal/i }));
-    await user.click(getCta());
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // →freetext
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
-      // q3 should be absent — no auto-select applies when Q3 is hidden.
       expect("q3" in req.answers).toBe(false);
+    });
+  });
+});
+
+// ===========================================================================
+// Item 10 regression — success state renders DishCard for dishes[0]
+// ===========================================================================
+describe("Questions — success state regression (Item 10)", () => {
+  it("renders the success heading 'Here's what I'd order:' after a successful submit", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByText(/here'?s what i'?d order/i);
+  });
+
+  it("renders exactly one DishCard sentinel (not all 5 dishes)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByTestId("dish-card");
+    expect(screen.getAllByTestId("dish-card")).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// Item 8 regression — error state from RecommendApiError
+// ===========================================================================
+describe("Questions — error state regression (Item 8)", () => {
+  it("renders the error message when postRecommend throws a RecommendApiError", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("mcp_error", "Swiggy MCP timed out", "req-001"),
+    );
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByText("Swiggy MCP timed out");
+  });
+
+  it("renders a 'Try again' button after a RecommendApiError", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByRole("button", { name: /try again/i });
+  });
+
+  it("hides the spinner after a RecommendApiError", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByRole("button", { name: /try again/i });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("renders 'Something went wrong.' for a non-RecommendApiError throw", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(new TypeError("Network request failed"));
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await screen.findByText("Something went wrong.");
+  });
+
+  it("'Try again' removes the error message from the screen", async () => {
+    const user = userEvent.setup();
+    const errorMessage = "Swiggy MCP timed out";
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("mcp_error", errorMessage, "req-001"),
+    );
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+    await screen.findByText(errorMessage);
+
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(screen.queryByText(errorMessage)).not.toBeInTheDocument();
+  });
+
+  it("after 'Try again', a second submit succeeds and renders DishCard", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend
+      .mockRejectedValueOnce(
+        new RecommendApiError("internal_error", "Request failed", ""),
+      )
+      .mockResolvedValueOnce(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+    await screen.findByRole("button", { name: /try again/i });
+
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await screen.findByTestId("dish-card");
+    expect(mockPostRecommend).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ===========================================================================
+// Item 5 regression — passiveContext and profileSignal in the request body
+// ===========================================================================
+describe("Questions — passiveContext and profileSignal regression", () => {
+  it("includes a passiveContext block in the submitted request", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.passiveContext).toBeDefined();
+      expect(typeof req.passiveContext.time).toBe("string");
+      expect(req.passiveContext.location).toBeDefined();
+    });
+  });
+
+  it("includes a profileSignal with dietaryPattern, topCuisines, avgOrderValue", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.profileSignal.dietaryPattern).toBe("non-veg");
+      expect(req.profileSignal.topCuisines).toEqual(["Biryani", "North Indian"]);
+      expect(req.profileSignal.avgOrderValue).toBe(280);
+    });
+  });
+
+  it("does not include userId in the profileSignal block", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await walkAndSubmit(user);
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.profileSignal).not.toHaveProperty("userId");
     });
   });
 });
