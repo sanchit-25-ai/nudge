@@ -1,13 +1,14 @@
 import { z } from "zod";
-import type {
-  Dish,
-  Location,
-  PassiveContext,
-  ProfileSignal,
-  RecommendAnswers,
-  RecommendRequest,
-  RecommendResponse,
-  Restaurant,
+import {
+  FREETEXT_MAX_CHARS,
+  type Dish,
+  type Location,
+  type PassiveContext,
+  type ProfileSignal,
+  type RecommendAnswers,
+  type RecommendRequest,
+  type RecommendResponse,
+  type Restaurant,
 } from "@shared/types";
 
 const LocationSchema = z.object({
@@ -25,7 +26,7 @@ const RecommendAnswersSchema = z.object({
     .array(z.enum(["veg-only", "fast-delivery", "budget", "high-rated"]))
     .optional(),
   partySize: z.number().int().min(1).max(10).optional(),
-  freetext: z.string().max(500).optional(),
+  freetext: z.string().max(FREETEXT_MAX_CHARS).optional(),
 }) satisfies z.ZodType<RecommendAnswers>;
 
 const PassiveContextSchema = z.object({

@@ -58,6 +58,11 @@ export type Q3Constraint =
   | "budget"
   | "high-rated";
 
+// Single source of truth for the freetext length cap. FE textarea maxLength
+// and BE Zod schema both bind to this so the user can't type past what the
+// server will accept.
+export const FREETEXT_MAX_CHARS = 500;
+
 export type RecommendAnswers = {
   q1: HungerLevel;
   q2?: MealType;
