@@ -325,6 +325,7 @@ describe("buildDynamicContext — field-line stability for minimal input", () =>
     "Dietary pattern:",
     "Average order value (₹):",
     "Time:",
+    "Party size:", // Item 11 — new field, always emitted
   ];
 
   it.each(lineKeys)(
@@ -800,5 +801,93 @@ describe("buildDynamicContext — sentinel-tag stripping (prompt-injection bound
     };
     const ctx = buildDynamicContext(input);
     expect(ctx).toContain("History summary: —");
+  });
+});
+
+// ===========================================================================
+// 19. buildDynamicContext — Party size line (Item 11)
+//
+// Spec: .claude/specs/11-further-questions.md §"backend/src/prompt.ts"
+// The Party size field is per-request (dynamic), belongs in the dynamic block
+// only, and follows the "—" placeholder convention for absent values.
+// ===========================================================================
+describe("buildDynamicContext — Party size line (Item 11)", () => {
+  it("renders 'Party size: <n>' when answers.partySize is set", () => {
+    const input: RecommendRequest = {
+      ...FULL_INPUT,
+      answers: { ...FULL_INPUT.answers, partySize: 4 },
+    };
+    const ctx = buildDynamicContext(input);
+    expect(ctx).toContain("Party size: 4");
+  });
+
+  it("renders 'Party size: —' when answers.partySize is undefined", () => {
+    // MINIMAL_INPUT has no partySize field.
+    const ctx = buildDynamicContext(MINIMAL_INPUT);
+    expect(ctx, "absent partySize must render the em-dash placeholder").toContain(
+      "Party size: —",
+    );
+  });
+
+  it("renders 'Party size: 1' when partySize is at the lower bound", () => {
+    const input: RecommendRequest = {
+      ...MINIMAL_INPUT,
+      answers: { ...MINIMAL_INPUT.answers, partySize: 1 },
+    };
+    expect(buildDynamicContext(input)).toContain("Party size: 1");
+  });
+
+  it("renders 'Party size: 10' when partySize is at the upper bound", () => {
+    const input: RecommendRequest = {
+      ...MINIMAL_INPUT,
+      answers: { ...MINIMAL_INPUT.answers, partySize: 10 },
+    };
+    expect(buildDynamicContext(input)).toContain("Party size: 10");
+  });
+
+  it("Party size line appears inside the <user_signals> sentinel (not in static prompt)", () => {
+    const input: RecommendRequest = {
+      ...MINIMAL_INPUT,
+      answers: { ...MINIMAL_INPUT.answers, partySize: 3 },
+    };
+    const ctx = buildDynamicContext(input);
+    const open = ctx.indexOf("<user_signals>");
+    const close = ctx.indexOf("</user_signals>");
+    const partySizeIdx = ctx.indexOf("Party size:");
+    expect(open).toBeGreaterThanOrEqual(0);
+    expect(close).toBeGreaterThan(open);
+    expect(partySizeIdx, "Party size: line must be inside the sentinel tags").toBeGreaterThan(
+      open,
+    );
+    expect(partySizeIdx).toBeLessThan(close);
+  });
+
+  it("STATIC_PROMPT does not contain 'Party size:' (per-request data stays in dynamic block only)", () => {
+    expect(
+      STATIC_PROMPT,
+      "Party size must not appear in the static cached prompt — it is per-request data",
+    ).not.toContain("Party size:");
+  });
+
+  it("FULL_INPUT has no partySize, so dynamic block renders 'Party size: —' for the full fixture", () => {
+    // FULL_INPUT deliberately omits partySize to verify em-dash for an otherwise
+    // fully-populated request (ensuring the field is always emitted, not only
+    // for the minimal fixture).
+    const ctx = buildDynamicContext(FULL_INPUT);
+    expect(ctx).toContain("Party size: —");
+  });
+
+  it("Party size line is present between Q3 constraints and Freetext in the field order", () => {
+    const input: RecommendRequest = {
+      ...FULL_INPUT,
+      answers: { ...FULL_INPUT.answers, partySize: 6 },
+    };
+    const ctx = buildDynamicContext(input);
+    const q3Idx = ctx.indexOf("Q3 — constraints:");
+    const partySizeIdx = ctx.indexOf("Party size:");
+    const freetextIdx = ctx.indexOf("Freetext:");
+    expect(q3Idx).toBeGreaterThanOrEqual(0);
+    expect(partySizeIdx).toBeGreaterThan(q3Idx);
+    expect(freetextIdx).toBeGreaterThan(partySizeIdx);
   });
 });

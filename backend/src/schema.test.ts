@@ -289,6 +289,119 @@ describe("RecommendRequestSchema", () => {
 });
 
 // ===========================================================================
+// 1b. RecommendRequestSchema — partySize validation (Item 11)
+//
+// Spec: .claude/specs/11-further-questions.md § "backend/src/schema.ts"
+// partySize: z.number().int().min(1).max(10).optional()
+// ===========================================================================
+describe("RecommendRequestSchema — partySize field (Item 11)", () => {
+  it("accepts partySize: 1 (lower boundary)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 1 },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts partySize: 10 (upper boundary)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 10 },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts partySize: 5 (mid-range integer)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 5 },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a request body with no partySize field at all (field is optional)", () => {
+    // VALID_REQUEST has no partySize; this asserts the baseline still parses.
+    const result = RecommendRequestSchema.safeParse(VALID_REQUEST);
+    expect(result.success, "omitting partySize entirely must still be valid").toBe(true);
+    if (result.success) {
+      expect(result.data.answers).not.toHaveProperty("partySize");
+    }
+  });
+
+  it("accepts partySize alongside q2 and q3 (composite valid request)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: {
+        ...VALID_REQUEST.answers,
+        q2: "indulgent",
+        q3: ["budget", "fast-delivery"],
+        partySize: 4,
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects partySize: 0 (below min 1)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 0 },
+    });
+    expect(result.success, "partySize: 0 must be rejected (min is 1)").toBe(false);
+  });
+
+  it("rejects partySize: 11 (above max 10)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 11 },
+    });
+    expect(result.success, "partySize: 11 must be rejected (max is 10)").toBe(false);
+  });
+
+  it("rejects partySize: -1 (negative, below min)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: -1 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects partySize: 4.5 (non-integer — violates .int())", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 4.5 },
+    });
+    expect(result.success, "partySize: 4.5 must be rejected (must be integer)").toBe(false);
+  });
+
+  it("rejects partySize: '4' (string — wrong type)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: "4" },
+    });
+    expect(result.success, "partySize: '4' (string) must be rejected").toBe(false);
+  });
+
+  it("rejects partySize: null", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: null },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("parsed partySize value is preserved exactly (no coercion)", () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      answers: { ...VALID_REQUEST.answers, partySize: 7 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.answers.partySize).toBe(7);
+    }
+  });
+});
+
+// ===========================================================================
 // 2. RecommendResponseSchema — structural contract and length constraint
 // ===========================================================================
 describe("RecommendResponseSchema", () => {

@@ -24,6 +24,7 @@ const RecommendAnswersSchema = z.object({
   q3: z
     .array(z.enum(["veg-only", "fast-delivery", "budget", "high-rated"]))
     .optional(),
+  partySize: z.number().int().min(1).max(10).optional(),
   freetext: z.string().max(500).optional(),
 }) satisfies z.ZodType<RecommendAnswers>;
 
