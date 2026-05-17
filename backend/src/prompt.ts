@@ -228,6 +228,7 @@ export function buildDynamicContext(input: RecommendRequest): string {
     `Q1 — hunger level: ${HUNGER_LABELS[answers.q1]}`,
     `Q2 — meal type: ${humanLabel(answers.q2, MEAL_TYPE_LABELS)}`,
     `Q3 — constraints: ${q3Rendered}`,
+    `Party size: ${answers.partySize ?? "—"}`,
     `Freetext: ${freetextRendered}`,
     "</user_signals>",
   ].join("\n");

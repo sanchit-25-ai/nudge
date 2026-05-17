@@ -62,6 +62,7 @@ export type RecommendAnswers = {
   q1: HungerLevel;
   q2?: MealType;
   q3?: Q3Constraint[];
+  partySize?: number; // §4.2 — meaningful only when q3 includes 'budget'; validated 1–10 BE-side
   freetext?: string;
 };
 
