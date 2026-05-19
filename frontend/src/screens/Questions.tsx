@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type FormEvent,
@@ -15,6 +16,7 @@ import {
   type RecommendRequest,
   type UserProfile,
 } from "@shared/types";
+import { buildIntentSummary, type IntentInputs } from "@shared/intentSummary";
 import { ensureProfile, saveProfile } from "../lib/profile";
 import { buildPassiveContext } from "../lib/passiveContext";
 import { buildProfileSignal } from "../lib/profileSignal";
@@ -126,9 +128,35 @@ export default function Questions() {
   // One-shot guard: ensures retry-after-error within the same mount doesn't
   // double-increment the skip counter. A single user intent = a single skip.
   const didCountSkipRef = useRef(false);
+  // One-shot guard: pre-fill the freetext textarea exactly once per mount,
+  // when the user first crosses into the freetext step. Subsequent back/
+  // forward navigation preserves whatever the user edited (or cleared).
+  const didPrefillFreetextRef = useRef(false);
 
   const onQ1KeyDown = useRadioArrowHandler(Q1_OPTIONS, hunger, setHunger, q1Refs);
   const onQ2KeyDown = useRadioArrowHandler(Q2_OPTIONS, mealType, setMealType, q2Refs);
+
+  // One-shot pre-fill when the user first reaches the freetext step. Depends
+  // on `step` only — re-firing on every chip toggle would overwrite user edits
+  // on the textarea. The guards (ref + empty-textarea + hunger-set) make the
+  // effect safe to re-run on back/forward navigation: it early-returns.
+  useEffect(() => {
+    if (step !== "freetext") return;
+    if (didPrefillFreetextRef.current) return;
+    if (freetext.length > 0) return;
+    if (!hunger) return;
+    const inputs: IntentInputs = {
+      q1: hunger,
+      ...(mealType ? { q2: mealType } : {}),
+      ...(q3.length > 0 ? { q3 } : {}),
+      ...(q3.includes("budget") ? { partySize } : {}),
+    };
+    setFreetext(
+      buildIntentSummary(inputs, { avgOrderValue: profile.avgOrderValue }),
+    );
+    didPrefillFreetextRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reason: one-shot prefill on step transition; depending on hunger/mealType/q3/partySize would re-fire on every chip toggle and clobber user edits.
+  }, [step]);
 
   const stepOrder: Step[] = showQ3
     ? ["q1", "q2", "q3", "freetext"]
@@ -356,10 +384,10 @@ export default function Questions() {
       {isIdle && step === "freetext" && (
         <>
           <h2 className="text-xl font-semibold text-text-primary">
-            Anything specific?
+            How does this sound?
           </h2>
           <p className="mt-2 text-sm text-text-secondary">
-            Add cravings, constraints, or anything else worth knowing. Optional.
+            Edit to refine. We'll use this as your primary intent.
           </p>
           <textarea
             value={freetext}
