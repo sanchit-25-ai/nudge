@@ -240,7 +240,7 @@ describe("Questions — first load shows only Q1 step (Item 12)", () => {
   it("freetext heading 'Anything specific?' is NOT in the DOM on initial render", () => {
     render(<Questions />);
     expect(
-      screen.queryByRole("heading", { name: /anything specific\?/i }),
+      screen.queryByRole("heading", { name: /how does this sound\?/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -449,7 +449,7 @@ describe("Questions — Q3 → freetext step advance (Item 12)", () => {
     await advanceToFreetext(user);
 
     expect(
-      screen.getByRole("heading", { name: /anything specific\?/i }),
+      screen.getByRole("heading", { name: /how does this sound\?/i }),
     ).toBeInTheDocument();
   });
 
@@ -699,8 +699,9 @@ describe("Questions — Back preserves freetext value (Item 12)", () => {
 
     await advanceToFreetext(user);
 
-    // Type into the textarea.
+    // Clear the Item 13 prefill, then type into the textarea.
     const textarea = screen.getByRole("textbox");
+    await user.clear(textarea);
     await user.type(textarea, "extra spicy please");
 
     // Go back to Q3.
@@ -750,7 +751,7 @@ describe("Questions — Q3 skip-collapse with q3SkipCount=3 (Item 12)", () => {
 
     // Should be on freetext — NOT Q3.
     expect(
-      screen.getByRole("heading", { name: /anything specific\?/i }),
+      screen.getByRole("heading", { name: /how does this sound\?/i }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: /any constraints\?/i }),
@@ -884,7 +885,11 @@ describe("Questions — submit body omission rules (Item 12)", () => {
     mockPostRecommend.mockResolvedValue(makeSuccessResponse());
     render(<Questions />);
 
-    await walkAndSubmit(user, /light snack/i);
+    // Walk to freetext and clear the Item 13 prefill before submit so the
+    // payload has no freetext field.
+    await advanceToFreetext(user, /light snack/i);
+    await user.clear(screen.getByRole("textbox"));
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
@@ -904,7 +909,9 @@ describe("Questions — freetext omitted when textarea is empty (Item 12)", () =
     render(<Questions />);
 
     await advanceToFreetext(user);
-    // Do NOT type anything. Submit.
+    // Item 13 pre-fills the textarea on arrival — clear it so the submit body
+    // legitimately reflects an empty freetext.
+    await user.clear(screen.getByRole("textbox"));
     await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await waitFor(() => {
@@ -928,6 +935,8 @@ describe("Questions — freetext omitted when whitespace-only (Item 12)", () => 
 
     await advanceToFreetext(user);
     const textarea = screen.getByRole("textbox");
+    // Clear the Item 13 prefill, then type whitespace-only content.
+    await user.clear(textarea);
     await user.type(textarea, "   ");
 
     await user.click(screen.getByRole("button", { name: /find my meal/i }));
@@ -1069,7 +1078,7 @@ describe("Questions — loading view replaces step body (Item 12)", () => {
       expect(screen.getByRole("status")).toBeInTheDocument();
     });
     expect(
-      screen.queryByRole("heading", { name: /anything specific\?/i }),
+      screen.queryByRole("heading", { name: /how does this sound\?/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -1146,7 +1155,7 @@ describe("Questions — success view (Item 12)", () => {
 
     await screen.findByTestId("dish-card");
     expect(
-      screen.queryByRole("heading", { name: /anything specific\?/i }),
+      screen.queryByRole("heading", { name: /how does this sound\?/i }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /find my meal/i }),
@@ -1179,6 +1188,7 @@ describe("Questions — error → Try again returns to freetext (Item 12)", () =
 
     await advanceToFreetext(user);
     const textarea = screen.getByRole("textbox");
+    await user.clear(textarea);
     await user.type(textarea, "spicy food");
     await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
@@ -1187,7 +1197,7 @@ describe("Questions — error → Try again returns to freetext (Item 12)", () =
 
     // The freetext step body is back.
     expect(
-      screen.getByRole("heading", { name: /anything specific\?/i }),
+      screen.getByRole("heading", { name: /how does this sound\?/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
@@ -1200,7 +1210,9 @@ describe("Questions — error → Try again returns to freetext (Item 12)", () =
     render(<Questions />);
 
     await advanceToFreetext(user);
-    await user.type(screen.getByRole("textbox"), "spicy food");
+    const textarea = screen.getByRole("textbox");
+    await user.clear(textarea);
+    await user.type(textarea, "spicy food");
     await user.click(screen.getByRole("button", { name: /find my meal/i }));
 
     await screen.findByRole("button", { name: /try again/i });
@@ -2198,5 +2210,379 @@ describe("Questions — passiveContext and profileSignal regression", () => {
       const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
       expect(req.profileSignal).not.toHaveProperty("userId");
     });
+  });
+});
+
+// ===========================================================================
+// Item 13 — Freetext step copy: heading + helper text
+// ===========================================================================
+describe("Questions — freetext step copy (Item 13)", () => {
+  it("freetext step heading reads 'How does this sound?'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByRole("heading", { name: /how does this sound\?/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("freetext step helper text reads 'Edit to refine. We'll use this as your primary intent.'", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    expect(
+      screen.getByText(/edit to refine/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/we.ll use this as your primary intent/i),
+    ).toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// Item 13 — Prefill on first arrival at freetext step
+// ===========================================================================
+describe("Questions — freetext prefill on first arrival (Item 13)", () => {
+  it("prefills textarea with 'A regular meal.' when Q1=Regular meal, Q2 and Q3 skipped", async () => {
+    const user = userEvent.setup();
+    // NON_VEG_PROFILE has avgOrderValue=280; no Q3 chips → base clause only.
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("A regular meal.");
+    });
+  });
+
+  it("prefills textarea with 'Something light to snack on.' when Q1=Light snack, no Q2, no Q3", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user, /light snack/i);
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("Something light to snack on.");
+    });
+  });
+
+  it("prefills textarea with 'A comforting regular meal.' when Q1=Regular meal, Q2=Comfort favourite", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ2(user);
+    await user.click(screen.getByRole("radio", { name: /comfort favourite/i }));
+    // Q2→Q3→freetext.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("A comforting regular meal.");
+    });
+  });
+
+  it("prefill includes rupee budget figure when budget chip is selected (no partySize bump)", async () => {
+    // Default partySize is 2; budget selected → 'for 2, under ₹280 each.'
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q3→freetext
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue(
+        "A regular meal, for 2, under ₹280 each.",
+      );
+    });
+  });
+
+  it("prefill includes rupee budget figure with bumped partySize=4", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("checkbox", { name: /budget/i }));
+    const increaseBtn = screen.getByRole("button", { name: /increase party size/i });
+    await user.click(increaseBtn);
+    await user.click(increaseBtn);
+    // Default 2 → 4.
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q3→freetext
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue(
+        "A regular meal, for 4, under ₹280 each.",
+      );
+    });
+  });
+
+  it("prefill on Q3 skip-collapse path: Q1=Light snack, Q2 skipped → 'Something light to snack on.'", async () => {
+    const user = userEvent.setup();
+    // q3SkipCount=3 → step order is q1→q2→freetext (no Q3).
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    render(<Questions />);
+
+    await advanceToQ2(user, /light snack/i);
+    // Q2 Next → freetext directly (Q3 is collapsed).
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("Something light to snack on.");
+    });
+  });
+
+  it("prefill on Q3 skip-collapse path with Q2=Healthy → 'A light healthy snack.'", async () => {
+    const user = userEvent.setup();
+    mockEnsureProfile.mockReturnValue(SKIP_COLLAPSED_PROFILE);
+    render(<Questions />);
+
+    await advanceToQ2(user, /light snack/i);
+    await user.click(screen.getByRole("radio", { name: /healthy/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // →freetext
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("A light healthy snack.");
+    });
+  });
+
+  it("prefill reflects veg auto-select when dietaryPattern='veg' and veg-only chip stays selected", async () => {
+    const user = userEvent.setup();
+    // VEG_PROFILE auto-selects veg-only chip; q3SkipCount=0 so Q3 is shown.
+    mockEnsureProfile.mockReturnValue(VEG_PROFILE);
+    render(<Questions />);
+
+    // Q1=Regular meal, Q2 skipped, Q3 shows veg-only pre-checked — advance without touching chips.
+    await advanceToQ3(user);
+    await user.click(screen.getByRole("button", { name: /^next$/i })); // Q3→freetext
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("A regular meal, veg.");
+    });
+  });
+});
+
+// ===========================================================================
+// Item 13 — One-shot prefill: edits persist, no re-prefill on back-forward
+// ===========================================================================
+describe("Questions — one-shot prefill ref guard (Item 13)", () => {
+  it("edited freetext persists after Back→(Q3 state change)→Next — no re-prefill", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    // Reach freetext.
+    await advanceToFreetext(user);
+
+    // Wait for prefill then overwrite it entirely.
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+    await user.type(textarea, "extra spicy please");
+    expect(textarea).toHaveValue("extra spicy please");
+
+    // Navigate back to Q3.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+
+    // Toggle a Q3 chip to change state (triggers effect deps if ref guard is broken).
+    await user.click(screen.getByRole("checkbox", { name: /fast delivery/i }));
+
+    // Navigate forward to freetext again.
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Edited value must still be in place — NOT re-prefilled.
+    expect(screen.getByRole("textbox")).toHaveValue("extra spicy please");
+  });
+
+  it("cleared textarea stays empty after Back→Next (one-shot ref already fired)", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // Wait for prefill, then clear it completely.
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+    expect(textarea).toHaveValue("");
+
+    // Navigate back and return to freetext.
+    await user.click(screen.getByRole("button", { name: /← back/i }));
+    await user.click(screen.getByRole("button", { name: /^next$/i }));
+
+    // Textarea must remain empty — the one-shot ref guards re-prefill.
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
+  it("placeholder is visible on the textarea when it is cleared", async () => {
+    const user = userEvent.setup();
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Any specific cravings or constraints?",
+    );
+    expect(textarea).toHaveValue("");
+  });
+});
+
+// ===========================================================================
+// Item 13 — Submit with edited / cleared / whitespace-only prefill
+// ===========================================================================
+describe("Questions — submit body with Item 13 prefill (Item 13)", () => {
+  it("submit sends edited freetext as answers.freetext (trimmed)", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // Overwrite the prefill with a custom value.
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+    await user.type(textarea, "extra spicy please");
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.answers.freetext).toBe("extra spicy please");
+    });
+  });
+
+  it("submit sends the prefill value unchanged when user does not edit it", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // Wait for prefill to settle, then submit without editing.
+    await screen.findByRole("textbox");
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("A regular meal.");
+    });
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.answers.freetext).toBe("A regular meal.");
+    });
+  });
+
+  it("submit omits answers.freetext when the textarea is cleared before submitting", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // Wait for prefill then clear completely.
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(
+        "freetext" in req.answers,
+        "freetext must be absent when textarea is cleared",
+      ).toBe(false);
+    });
+  });
+
+  it("submit omits answers.freetext when cleared to whitespace-only", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+    await user.type(textarea, "   ");
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(
+        "freetext" in req.answers,
+        "freetext must be absent when textarea is whitespace-only",
+      ).toBe(false);
+    });
+  });
+
+  it("submit sends trimmed freetext when user types with surrounding whitespace", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockResolvedValue(makeSuccessResponse());
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+    await user.type(textarea, "  kebabs please  ");
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await waitFor(() => {
+      const req = mockPostRecommend.mock.calls[0]?.[0] as RecommendRequest;
+      expect(req.answers.freetext).toBe("kebabs please");
+    });
+  });
+});
+
+// ===========================================================================
+// Item 13 — Error→Try again preserves prefill-or-edit state
+// ===========================================================================
+describe("Questions — error → Try again preserves freetext from Item 13 prefill", () => {
+  it("prefilled value is still in the textarea after a failed submit and Try again", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    // Verify prefill landed, then submit (which will fail).
+    await waitFor(() => {
+      expect(screen.getByRole("textbox")).toHaveValue("A regular meal.");
+    });
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+
+    await screen.findByRole("button", { name: /try again/i });
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    // Back on freetext — prefill value should still be present (state is preserved).
+    expect(screen.getByRole("textbox")).toHaveValue("A regular meal.");
+  });
+
+  it("edited value is still in the textarea after a failed submit and Try again", async () => {
+    const user = userEvent.setup();
+    mockPostRecommend.mockRejectedValue(
+      new RecommendApiError("internal_error", "Request failed", ""),
+    );
+    render(<Questions />);
+
+    await advanceToFreetext(user);
+
+    const textarea = await screen.findByRole("textbox");
+    await user.clear(textarea);
+    await user.type(textarea, "I want kebabs");
+
+    await user.click(screen.getByRole("button", { name: /find my meal/i }));
+    await screen.findByRole("button", { name: /try again/i });
+    await user.click(screen.getByRole("button", { name: /try again/i }));
+
+    expect(screen.getByRole("textbox")).toHaveValue("I want kebabs");
   });
 });
